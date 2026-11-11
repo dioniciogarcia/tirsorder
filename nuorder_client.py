@@ -1786,21 +1786,19 @@ BUILTIN_PROFILES = {
         "pictures": {"extract": True, "name_from": "BRAND_ID"},
     },
     "MaxMara": {
-        "name": "MaxMara", "label": "MaxMara", "brand": "MaxMara", "version": 1,
-        "description": "MaxMara bulk linesheets (one sheet per collection: MM 1, MM 2 ...). Add the brand's PDF catalogs "
-                       "to the file list to get the sizes, fabric composition and pictures.",
+        "name": "MaxMara", "label": "MaxMara", "brand": "MaxMara", "version": 2,
+        "description": "MaxMara bulk linesheets (one sheet per collection: MM 1, MM 2 ...), set up like the brand's NuORDER "
+                       "portal data. Add the brand's PDF catalogs to the file list to get the sizes, fabric composition and pictures.",
         "detect": {"headers_all": ["Exit Collection Description", "Ship Window", "VPN", "Model", "Class Description", "Variant"]},
         "row_key": ["VPN"],
+        "linesheet_pattern": "{season} - {sheet}",
         "columns": [
             {"header": "LINESHEET NAME", "value": "{linesheet}"},
-            {"header": "COLLECTION NAME", "from": "Exit Collection Description"},
-            {"header": "NAME", "join": ["Model", "Class Description"], "sep": " ", "strip_prefix": "MML", "title_first": True},
-            {"header": "STYLE NUMBER", "from": "Model"},
+            {"header": "NAME", "from": "Model"},
+            {"header": "STYLE NUMBER", "from": "VPN"},
             {"header": "COLOR", "from": "Color Description"},
             {"header": "COLOR CODE", "from": "Variant"},
-            {"header": "CATEGORY", "from": "Class Description"},
-            {"header": "VPN", "from": "VPN"},
-            {"header": "ARTICLE", "from": "Article", "optional": True},
+            {"header": "DESCRIPTION", "from": "Class Description"},
             {"header": "FABRIC DESCRIPTION", "optional": True},
             {"header": "AVAILABLE FROM", "date": "from"},
             {"header": "AVAILABLE UNTIL", "date": "until"},
@@ -1808,11 +1806,11 @@ BUILTIN_PROFILES = {
             {"header": "RETAIL USD", "from": ["Retail"], "number": True, "usd": True},
             {"header": "SIZES"},
             {"header": "SEASON", "value": "{season}"},
-            {"header": "BRAND_ID", "join_out": ["STYLE NUMBER", "COLOR CODE"], "sep": "_"},
+            {"header": "BRAND_ID", "join_out": ["STYLE NUMBER", "COLOR"], "sep": "_"},
         ],
         "sizes": {"mode": "list", "from": []},
         "dates": {"window_from": ["SHIP WINDOW"], "anchor_year": "season"},
-        "season": {"from": "file_name", "map": _SEASON_MAP},
+        "season": {"from": "file_name"},
         "pdf": "maxmara",
         "pictures": {"extract": False, "name_from": "BRAND_ID"},
     },
@@ -2321,7 +2319,11 @@ def profile_result(cfg, ctx, L, progress, stop):
     for g in groups.values():
         season = g["season"] or file_season or cfg.get("season", "")
         season = apply_season_map(season, sea.get("map"))
-        linesheet = override or linesheet_label(g["linesheet"]) or default_ls
+        linesheet = override or linesheet_label(g["linesheet"])
+        if not linesheet and prof.get("linesheet_pattern") and cfg.get("sheet"):
+            linesheet = linesheet_label(prof["linesheet_pattern"].replace("{season}", season or "").replace(
+                "{sheet}", clean_text(cfg["sheet"])).replace(" - -", " -").strip(" -"))
+        linesheet = linesheet or default_ls
         win = g["dates"] or title_dates
         d_from = win[0] if win else None
         d_until = (g["until"][0] if g["until"] else (win[1] if len(win) >= 2 else None))
@@ -2428,7 +2430,7 @@ def apply_maxmara_pdf(res, cfg, ctx, L, stop, progress):
     no_model, no_size, saved = [], [], 0
     for row in res.rows:
         v = row["values"]
-        model, var = clean_text(v.get("STYLE NUMBER")), clean_text(v.get("COLOR CODE"))
+        model, var = clean_text(v.get("NAME")), clean_text(v.get("COLOR CODE"))
         c = products.get(model)
         if not c:
             no_model.append(model)
@@ -2441,8 +2443,6 @@ def apply_maxmara_pdf(res, cfg, ctx, L, stop, progress):
         row["sizes"] = list(sizes)
         if c.get("fabric"):
             v["FABRIC DESCRIPTION"] = c["fabric"]
-        if c.get("art"):
-            v["ARTICLE"] = c["art"]
         if cfg.get("extract_pictures", True) and model in images and row.get("pic_name"):
             if save_picture(ctx, row["pic_name"], ".jpg", images[model]):
                 saved += 1

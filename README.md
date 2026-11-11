@@ -30,9 +30,9 @@ Brand files, results and the built .exe are never uploaded to this repository (s
 
 ### Version 3.4 — MaxMara data format
 - **New data type "MaxMara"** (detected automatically from the Excel columns Exit Collection Description / Ship Window / VPN / Model / Class Description / Variant). Every sheet (MM1, MM2 ...) becomes its own linesheet.
-- **Column rules:** STYLE NUMBER = Model (MML...), NAME = model name + class description (e.g. "Alessio Skirt"), COLOR / COLOR CODE = Color Description / Variant, CATEGORY = Class Description, COLLECTION NAME = Exit Collection Description, VPN and ARTICLE kept, WHOLESALE USD = Cost, RETAIL USD = Retail, BRAND_ID = STYLE NUMBER_COLOR CODE, SEASON from the file name (SS27 -> SPRING 2027).
+- **Column rules (set up like MaxMara's NuORDER portal data):** STYLE NUMBER = VPN, NAME = Model (MML...), COLOR / COLOR CODE = Color Description / Variant, DESCRIPTION = Class Description, WHOLESALE USD = Cost, RETAIL USD = Retail, SEASON as written in the file name (SS27), BRAND_ID = STYLE NUMBER_COLOR, LINESHEET NAME = season - sheet (SS27 - MM1 RP).
 - **Ship Window** becomes AVAILABLE FROM / UNTIL using the season year (Dec 1 - Feb 28 of SS27 = 12/1/2026 - 2/28/2027).
-- **PDF catalogs in the Clean Data list:** add the brand's PDFs next to the Excel and the program reads them for the sizes (a size is offered when its quantity is above 0, per color), the fabric composition, the full article number and the pictures, which are saved as BRAND_ID_01 (resized like the other images). A composition that does not add up to 100% is flagged in the log (the PDF text itself may be cut off).
+- **PDF catalogs in the Clean Data list:** add the brand's PDFs next to the Excel and the program reads them for the sizes (a size is offered when its quantity is above 0, per color), the fabric composition and the pictures, which are saved as BRAND_ID_01 (resized like the other images). A composition that does not add up to 100% is flagged in the log (the PDF text itself may be cut off).
 - **PDF reader** improved over Randy's script: handles rotated pages, finds the same model on several pages, and flags anything it cannot place with certainty.
 
 ### Version 3.3 — MaxMara PDF images
