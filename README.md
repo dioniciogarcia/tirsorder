@@ -2,7 +2,7 @@
 
 A Windows program that turns brand linesheets and order forms into NuORDER-ready product data, handles product images, updates existing linesheets, and keeps a history of every run.
 
-Current version: **3.2**
+Current version: **3.3**
 
 ## How to build and run (Windows)
 
@@ -21,11 +21,18 @@ To try the program without building the .exe, double-click `Run_NuORDER_Client_w
 - **Clean Data & Images**: detects the brand (JOOR export, Ferragamo, Gucci, Velvet, Armani, NuORDER Default Data, or general rules), cleans one or several files into one master file, extracts pictures, downloads image links, renames a folder of images and resizes them.
 - **Linesheet Updater**: applies a brand's update file (prices, style numbers, names, season, dates, sizes, UPCs…) to a processed file or NuORDER data export, highlighting only the changed cells.
 - **Image Renaming**: matches a folder of images to the products of a file and copies them renamed (`BRAND_ID_01`, `_02`…) and resized.
+- **MaxMara PDF**: pulls the product pictures out of MaxMara's PDF catalogs (one JPG per product code starting with MML, saved as CODE.jpg), ready for the Image Renaming page.
 - **History**: every run, with a saved copy of each cleaned data file.
 
 Brand files, results and the built .exe are never uploaded to this repository (see `.gitignore`).
 
 ## Changelog
+
+### Version 3.3 — MaxMara PDF images
+- New **MaxMara PDF** page (based on Randy's extractor script): add one or more PDF catalogs, choose a folder, and the program saves the picture of every product code that starts with MML as `CODE.jpg`.
+- The first picture of a repeated code is kept, existing files are never overwritten, and codes where the picture can't be identified with certainty are listed in the log to check by hand.
+- Optional resizing (off by default on this page; the Image Renaming page resizes afterwards).
+- The build files now install PyMuPDF.
 
 ### Version 3.2 — new design
 - **Left sidebar**, always open, with the logo, version and the four sections as a menu. The current section is highlighted.

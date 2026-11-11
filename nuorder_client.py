@@ -16,6 +16,7 @@ Needs openpyxl (Excel files) and Pillow (image resizing - optional: without it i
 import csv
 import datetime
 import hashlib
+import io
 import json
 import os
 import queue
@@ -42,7 +43,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tif", ".tiff", ".bmp"}
 
@@ -3116,6 +3117,153 @@ def run_rename(cfg, log, progress, stop):
 
 
 # ======================================================================
+#  MAXMARA PDF IMAGES - pull the product pictures out of the brand's PDF catalogs
+#  (logic by Randy: the product code "MML..." is found as text, and the picture just below it is saved as CODE.jpg)
+# ======================================================================
+
+def _load_pymupdf():
+    try:
+        import pymupdf as fitz_      # new name
+        return fitz_
+    except ImportError:
+        import fitz as fitz_         # old name
+        return fitz_
+
+
+def pymupdf_available():
+    try:
+        _load_pymupdf()
+        return True
+    except Exception:
+        return False
+
+
+def extract_pdf_images(pdfs, dest, L, stop, progress=None, resize_px=None):
+    """Save one JPG per MML code found in the PDFs. The first appearance of a code wins and existing files are never
+    overwritten. Returns a dict of counters."""
+    fitz = _load_pymupdf()
+    stats = dict(saved=0, duplicates=0, existing=0, warnings=0, pages=0, review=[])
+    seen = set()
+    os.makedirs(dest, exist_ok=True)
+    for fi, source in enumerate(pdfs, 1):
+        if stop.is_set():
+            raise UserError("Stopped by user.")
+        name = os.path.basename(source)
+        try:
+            with fitz.open(source) as document:
+                if document.needs_pass:
+                    raise ValueError("the PDF is protected with a password.")
+                total = len(document)
+                for index, page in enumerate(document):
+                    if stop.is_set():
+                        raise UserError("Stopped by user.")
+                    stats["pages"] += 1
+                    if progress:
+                        progress(int(100 * ((fi - 1) + (index + 1) / max(total, 1)) / len(pdfs)), 100)
+                    names = [(w[4], fitz.Rect(w[:4]) * page.rotation_matrix)
+                             for w in page.get_text("words") if re.fullmatch(r"MML[A-Z0-9]+", w[4])]
+                    names.sort(key=lambda item: (round(item[1].y0), item[1].x0))
+                    images = page.get_image_info(xrefs=True)
+                    if not names:
+                        stats["warnings"] += 1
+                        L(f"{name} - page {index + 1}/{total}: no MML codes found on this page.")
+                        continue
+                    for code, position in names:
+                        if code in seen:
+                            stats["duplicates"] += 1
+                            continue
+                        seen.add(code)                       # the first appearance has priority
+                        target = os.path.join(dest, f"{code}.jpg")
+                        if os.path.exists(target):
+                            stats["existing"] += 1
+                            L(f"  {code}: already exists - kept.")
+                            continue
+                        candidates = []
+                        for image in images:
+                            box = fitz.Rect(image["bbox"]) * page.rotation_matrix
+                            dx = (box.x0 + box.x1 - position.x0 - position.x1) / 2
+                            dy = box.y0 - position.y0
+                            if 20 < dy < 60 and -100 < dx < 10 and box.width > 45:
+                                candidates.append(image)
+                        if len(candidates) != 1 or not candidates[0]["xref"]:
+                            stats["warnings"] += 1
+                            stats["review"].append(f"{code}  ({name}, page {index + 1})")
+                            L(f"  CHECK {code} ({name}, page {index + 1}): could not identify one single picture.")
+                            continue
+                        try:
+                            data = document.extract_image(candidates[0]["xref"])["image"]
+                            from PIL import Image
+                            with Image.open(io.BytesIO(data)) as original:
+                                buf = io.BytesIO()
+                                original.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
+                            try:
+                                with open(target, "xb") as out:
+                                    out.write(buf.getvalue())
+                            except FileExistsError:
+                                stats["existing"] += 1
+                                continue
+                            stats["saved"] += 1
+                            L(f"  saved {code}.jpg")
+                            if resize_px and pillow_available():
+                                resize_to_jpg(target, target, resize_px)
+                        except UserError:
+                            raise
+                        except Exception as e:  # noqa
+                            stats["warnings"] += 1
+                            stats["review"].append(f"{code}  ({name}, page {index + 1}) - {e}")
+                            L(f"  ERROR {code}: {e}")
+        except UserError:
+            raise
+        except Exception as e:  # noqa
+            stats["warnings"] += 1
+            L(f"ERROR in {name}: {e}")
+    return stats
+
+
+def run_pdf_images(cfg, log, progress, stop):
+    lines = []
+
+    def L(msg):
+        lines.append(msg)
+        log(msg)
+
+    dest = cfg["dest"]
+    L(f"=== {APP_NAME} {APP_VERSION} - MaxMara PDF images ===")
+    L(f"PDF files : {len(cfg['pdfs'])}")
+    L(f"Images go to: {dest}")
+    L("")
+    if not pymupdf_available():
+        raise UserError("The PDF library (PyMuPDF) is missing. Run Build_NuORDER_Client.bat again "
+                        "(or:  py -m pip install pymupdf pillow).")
+    if not pillow_available():
+        raise UserError("The Pillow library is missing. Run Build_NuORDER_Client.bat again.")
+    st = extract_pdf_images(cfg["pdfs"], dest, L, stop, progress, cfg.get("resize_px"))
+    L("")
+    L(f"Saved: {st['saved']}   Repeated codes skipped: {st['duplicates']}   Already there: {st['existing']}   "
+      f"Warnings: {st['warnings']}")
+    if st["review"]:
+        L("")
+        L(f"Codes to check by hand ({len(st['review'])}):")
+        for r_ in st["review"]:
+            L("  - " + r_)
+    log_path = os.path.join(dest, "PDF_Images_Log.txt")
+    try:
+        with open(log_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+    except OSError:
+        pass
+    progress(100, 100)
+    summary = [f"{st['saved']} image(s) saved as CODE.jpg."]
+    if st["existing"]:
+        summary.append(f"{st['existing']} already existed (kept).")
+    if st["duplicates"]:
+        summary.append(f"{st['duplicates']} repeated code(s) skipped.")
+    if st["warnings"]:
+        summary.append(f"{st['warnings']} warning(s) - see the log.")
+    return "\n".join(summary), dest
+
+
+# ======================================================================
 #  LINESHEET UPDATER - apply a brand's update file to a NuORDER data export / processed file
 # ======================================================================
 
@@ -5362,6 +5510,111 @@ if tk is not None:
             self.v_skip.set(True)
 
     # ------------------------------------------------------------------
+    #  MAXMARA PDF IMAGES
+    # ------------------------------------------------------------------
+    class PdfTab(JobTab):
+        def __init__(self, parent):
+            super().__init__(parent)
+            sf = ScrollFrame(self)
+            sf.pack(fill="both", expand=True)
+            body = sf.inner
+
+            f1 = Card(body, text=" 1.  PDF catalogs   —   they are processed in the order of this list ", padding=12)
+            f1.pack(fill="x", padx=W(8), pady=(W(14), 0))
+            bf = ttk.Frame(f1)
+            bf.pack(fill="x")
+            ttk.Button(bf, text="Add PDFs...", command=self.add_files).pack(side="left")
+            ttk.Button(bf, text="Remove selected", command=self.remove_files).pack(side="left", padx=6)
+            ttk.Button(bf, text="Move up", command=lambda: self.move(-1)).pack(side="left")
+            ttk.Button(bf, text="Move down", command=lambda: self.move(1)).pack(side="left", padx=6)
+            ttk.Button(bf, text="Clear list", command=lambda: self.lb_files.delete(0, "end")).pack(side="left")
+            self.lb_files = tk.Listbox(f1, height=5, selectmode="extended", exportselection=False)
+            self.lb_files.pack(fill="x", pady=8)
+            ttk.Label(f1, text="The program finds every product code that starts with MML in the PDF and saves the "
+                               "picture next to it as CODE.jpg. If a code appears more than once, the first picture is kept.",
+                      style="Muted.TLabel", wraplength=W(880), justify="left").pack(anchor="w")
+
+            f2 = Card(body, text=" 2.  Save the pictures in this folder ", padding=12)
+            f2.pack(fill="x", padx=W(8), pady=(W(14), 0))
+            self.v_dest = tk.StringVar()
+            ttk.Entry(f2, textvariable=self.v_dest).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+            ttk.Button(f2, text="Browse...", command=self.browse).grid(row=0, column=1)
+            f2.columnconfigure(0, weight=1)
+            ttk.Label(f2, text="Existing files are never overwritten. Next, use the Image Renaming page on this folder to "
+                               "give the pictures their NuORDER names.", style="Muted.TLabel", wraplength=W(880),
+                      justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+            f3 = Card(body, text=" 3.  Options ", padding=12)
+            f3.pack(fill="x", padx=W(8), pady=(W(14), 0))
+            self.v_resize = tk.BooleanVar(value=False)
+            self.v_resize_px = tk.StringVar(value=str(RESIZE_DEFAULT_PX))
+            resize_row(f3, self.v_resize, self.v_resize_px).pack(anchor="w")
+            ttk.Label(f3, text="Off by default here: the pictures are saved in the PDF's own quality (JPG, quality 95) and the "
+                               "Image Renaming page resizes them afterwards.", style="Muted.TLabel", wraplength=W(880),
+                      justify="left").pack(anchor="w", pady=(6, 0))
+            if not pymupdf_available():
+                ttk.Label(f3, text="The PDF library (PyMuPDF) is missing: run Build_NuORDER_Client.bat again.",
+                          style="Warn.TLabel").pack(anchor="w", pady=(6, 0))
+            self.build_run_area(body)
+
+        def badge_text(self):
+            n = self.lb_files.size()
+            return f"{n} PDF{'s' if n != 1 else ''}" if n else ""
+
+        def add_files(self):
+            have = set(self.lb_files.get(0, "end"))
+            for p_ in filedialog.askopenfilenames(title="Choose the PDF catalog(s)",
+                                                  filetypes=[("PDF documents", "*.pdf"), ("All files", "*.*")]):
+                if p_ not in have:
+                    self.lb_files.insert("end", p_)
+                    if not self.v_dest.get().strip():
+                        self.v_dest.set(os.path.join(os.path.dirname(p_), "MaxMara Images"))
+
+        def remove_files(self):
+            for i in reversed(self.lb_files.curselection()):
+                self.lb_files.delete(i)
+
+        def move(self, delta):
+            sel = self.lb_files.curselection()
+            if len(sel) != 1:
+                return
+            old = sel[0]
+            new = old + delta
+            if 0 <= new < self.lb_files.size():
+                item = self.lb_files.get(old)
+                self.lb_files.delete(old)
+                self.lb_files.insert(new, item)
+                self.lb_files.selection_set(new)
+
+        def browse(self):
+            p_ = filedialog.askdirectory(title="Folder where the pictures will be saved")
+            if p_:
+                self.v_dest.set(p_)
+
+        def collect_cfg(self):
+            files = list(self.lb_files.get(0, "end"))
+            if not files:
+                messagebox.showwarning(APP_NAME, "Please add at least one PDF (section 1).")
+                return None
+            dest = self.v_dest.get().strip()
+            if not dest:
+                messagebox.showwarning(APP_NAME, "Please choose the folder for the pictures (section 2).")
+                return None
+            px = resize_value(self.v_resize, self.v_resize_px)
+            if px is False:
+                return None
+            return dict(pdfs=files, dest=dest, resize_px=px)
+
+        def work(self, cfg, log, progress, stop):
+            return run_pdf_images(cfg, log, progress, stop)
+
+        def reset(self):
+            self.lb_files.delete(0, "end")
+            self.v_dest.set("")
+            self.v_resize.set(False)
+            self.v_resize_px.set(str(RESIZE_DEFAULT_PX))
+
+    # ------------------------------------------------------------------
     #  TAB 4 - HISTORY
     # ------------------------------------------------------------------
     class HistoryTab(ttk.Frame):
@@ -5590,6 +5843,7 @@ if tk is not None:
         ("clean", "▤", "Clean Data & Images", "Brand linesheets  →  NuORDER-ready data and images"),
         ("upd", "⟳", "Linesheet Updater", "Apply a brand's changes (prices, styles, UPCs ...) to a data file or NuORDER export"),
         ("rename", "▣", "Image Renaming", "Match a folder of images to the products and copy them renamed and resized"),
+        ("pdf", "▦", "MaxMara PDF", "Pull the product pictures (MML codes) out of MaxMara PDF catalogs"),
         ("hist", "◷", "History", "Every run, with a saved copy of each cleaned data file"),
     ]
 
@@ -5691,7 +5945,8 @@ if tk is not None:
         holder = ttk.Frame(main_, style="Page.TFrame")
         holder.pack(fill="both", expand=True)
         clean, upd, rename, hist = CleanTab(holder), UpdaterTab(holder), RenameTab(holder), HistoryTab(holder)
-        pages = {"clean": clean, "upd": upd, "rename": rename, "hist": hist}
+        pdf = PdfTab(holder)
+        pages = {"clean": clean, "upd": upd, "rename": rename, "pdf": pdf, "hist": hist}
         cur = {"key": None}
 
         def show(key):
@@ -5740,7 +5995,7 @@ if tk is not None:
         show("clean")
         apply_theme(root, UI["mode"], UI["accent"])
         root.after(1500, tick)
-        return dict(show=show, clean=clean, upd=upd, rename=rename, hist=hist, pick_theme=pick_theme,
+        return dict(show=show, clean=clean, upd=upd, rename=rename, pdf=pdf, hist=hist, pick_theme=pick_theme,
                     pick_accent=pick_accent)
 
 else:

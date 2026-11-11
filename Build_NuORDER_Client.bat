@@ -13,14 +13,14 @@ if errorlevel 1 (
   exit /b 1
 )
 py -m pip install --upgrade pip
-py -m pip install --upgrade openpyxl pillow pyinstaller
+py -m pip install --upgrade openpyxl pillow pymupdf pyinstaller
 if errorlevel 1 (
   echo Could not install the required packages. Check your internet connection.
   pause
   exit /b 1
 )
 if exist "NuORDER Client.exe" del /q "NuORDER Client.exe"
-py -m PyInstaller --noconfirm --clean --onefile --windowed --name "NuORDER Client" --hidden-import PIL.Image --hidden-import PIL.ImageOps --hidden-import PIL.JpegImagePlugin --hidden-import PIL.PngImagePlugin nuorder_client.py
+py -m PyInstaller --noconfirm --clean --onefile --windowed --name "NuORDER Client" --hidden-import PIL.Image --hidden-import PIL.ImageOps --hidden-import PIL.JpegImagePlugin --hidden-import PIL.PngImagePlugin --hidden-import pymupdf --hidden-import fitz --collect-submodules pymupdf nuorder_client.py
 if errorlevel 1 (
   echo The build failed. Copy the text above and send it to Claude.
   pause
