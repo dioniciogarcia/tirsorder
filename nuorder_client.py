@@ -21,6 +21,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -43,7 +44,10 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
+GITHUB_REPO = "dioniciogarcia/tirsorder"          # where new versions are published (Releases)
+RELEASE_EXE = "NuORDER-Client.exe"                # the program GitHub compiles for every version
+RELEASE_PY = "nuorder_client.py"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tif", ".tiff", ".bmp"}
 
@@ -2456,6 +2460,130 @@ def apply_maxmara_pdf(res, cfg, ctx, L, stop, progress):
 
 
 # ======================================================================
+#  UPDATES - new versions are compiled by GitHub and published as a Release
+# ======================================================================
+
+def parse_version(text):
+    nums = re.findall(r"\d+", str(text or ""))
+    return tuple(int(n) for n in nums[:4]) or (0,)
+
+
+def is_newer(latest, current):
+    a, b = list(parse_version(latest)), list(parse_version(current))
+    n = max(len(a), len(b))
+    a += [0] * (n - len(a))
+    b += [0] * (n - len(b))
+    return a > b
+
+
+def _http_get(url, timeout=20, accept="application/vnd.github+json"):
+    req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": accept})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def fetch_latest_release(timeout=20):
+    """The newest published version on GitHub: {version, tag, notes, page, exe, py} (exe / py = asset info or None)."""
+    try:
+        with _http_get(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest", timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise UserError("No version has been published on GitHub yet.")
+        raise UserError(f"GitHub answered with error {e.code}. Try again later.")
+    except (urllib.error.URLError, OSError, ValueError):
+        raise UserError("Could not reach GitHub. Check the internet connection and try again.")
+    tag = str(data.get("tag_name") or "")
+    assets = {a.get("name"): a for a in data.get("assets", []) if isinstance(a, dict)}
+    return dict(tag=tag, version=tag.lstrip("vV"), notes=str(data.get("body") or "").strip(),
+                page=data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases",
+                exe=assets.get(RELEASE_EXE), py=assets.get(RELEASE_PY))
+
+
+def download_asset(asset, dest, progress=None, stop=None, allow_any_host=False):
+    """Downloads one Release file (only from this program's own GitHub repository) to dest."""
+    url = str(asset.get("browser_download_url") or "")
+    if not allow_any_host and not url.startswith(f"https://github.com/{GITHUB_REPO}/releases/download/"):
+        raise UserError("Unexpected download address - the update was cancelled.")
+    tmp = dest + ".part"
+    try:
+        with _http_get(url, 120, "application/octet-stream") as r, open(tmp, "wb") as f:
+            total = int(r.headers.get("Content-Length") or asset.get("size") or 0)
+            got = 0
+            while True:
+                if stop is not None and stop.is_set():
+                    raise UserError("Stopped by user.")
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if progress:
+                    progress(got, total)
+        if asset.get("size") and os.path.getsize(tmp) != asset["size"]:
+            raise UserError("The download is incomplete. Please try again.")
+        os.replace(tmp, dest)
+        return dest
+    except (urllib.error.URLError, OSError) as e:
+        raise UserError(f"The download failed: {e}")
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def install_exe_update(new_path, current=None, check_exe=True):
+    """Windows lets a running program be renamed (not deleted): the old file becomes '.old', the new one takes its name."""
+    current = current or sys.executable
+    if check_exe:
+        with open(new_path, "rb") as f:
+            if f.read(2) != b"MZ":
+                raise UserError("The downloaded file is not a Windows program.")
+    old = current + ".old"
+    try:
+        if os.path.exists(old):
+            os.remove(old)
+    except OSError:
+        pass
+    os.replace(current, old)
+    try:
+        os.replace(new_path, current)
+    except Exception:
+        os.replace(old, current)
+        raise
+    return current
+
+
+def install_py_update(new_path, current):
+    """Running the .py file: replace it (a .bak copy of the old one is kept)."""
+    with open(new_path, encoding="utf-8") as f:
+        compile(f.read(), new_path, "exec")              # refuses a broken file
+    shutil.copy2(current, current + ".bak")
+    os.replace(new_path, current)
+    return current
+
+
+def cleanup_old_update():
+    if getattr(sys, "frozen", False):
+        try:
+            os.remove(sys.executable + ".old")
+        except OSError:
+            pass
+
+
+def relaunch_program():
+    env = dict(os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    env.pop("_MEIPASS2", None)
+    if getattr(sys, "frozen", False):
+        subprocess.Popen([sys.executable], env=env, close_fds=True)
+    else:
+        subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])], env=env, close_fds=True)
+
+
+
+# ======================================================================
 #  MASTER FILE: one or several results -> one NuORDER workbook
 # ======================================================================
 
@@ -4274,6 +4402,14 @@ def add_history(rec):
 #  USER INTERFACE
 # ======================================================================
 
+def open_url(url):
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
 def open_folder(path):
     try:
         if sys.platform.startswith("win"):
@@ -5901,6 +6037,182 @@ if tk is not None:
             self.v_resize_px.set(str(RESIZE_DEFAULT_PX))
 
     # ------------------------------------------------------------------
+    #  SETTINGS - program update
+    # ------------------------------------------------------------------
+    class SettingsTab(ttk.Frame):
+        def __init__(self, parent):
+            super().__init__(parent, style="Page.TFrame", padding=(W(28), W(22), W(28), W(22)))
+            self.q = queue.Queue()
+            self.release = None
+            self.newer = False
+            self.busy = False
+            self.is_busy = lambda: False          # set by the window: True while a run is in progress
+            self.on_state = None                  # called with True/False when an update is (not) available
+            self.stop_event = threading.Event()
+            card = Card(self, text=" Program update ", padding=14)
+            card.pack(fill="x")
+            ttk.Label(card, text="New versions are compiled by GitHub. One click downloads the newest one, replaces this "
+                                 "program and restarts it. Your History and settings are kept.",
+                      style="Muted.TLabel", wraplength=W(640), justify="left").pack(anchor="w")
+            info = ttk.Frame(card)
+            info.pack(fill="x", pady=(12, 4))
+            ttk.Label(info, text="Installed version:").grid(row=0, column=0, sticky="w")
+            ttk.Label(info, text=f"v{APP_VERSION}", style="Info.TLabel").grid(row=0, column=1, sticky="w", padx=8)
+            ttk.Label(info, text="Newest on GitHub:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+            self.v_latest = tk.StringVar(value="not checked yet")
+            ttk.Label(info, textvariable=self.v_latest, style="Info.TLabel").grid(row=1, column=1, sticky="w", padx=8, pady=(4, 0))
+            bf = ttk.Frame(card)
+            bf.pack(fill="x", pady=(10, 4))
+            self.btn_check = ttk.Button(bf, text="Check for updates", command=lambda: self.check(False))
+            self.btn_check.pack(side="left")
+            self.btn_update = ttk.Button(bf, text="Update now", style="Accent.TButton", command=self.update_now, state="disabled")
+            self.btn_update.pack(side="left", padx=8)
+            ttk.Button(bf, text="Open the releases page", command=lambda: open_url(f"https://github.com/{GITHUB_REPO}/releases")
+                       ).pack(side="left")
+            self.bar = ttk.Progressbar(card, mode="determinate", maximum=100)
+            self.bar.pack(fill="x", pady=(8, 4))
+            self.v_status = tk.StringVar(value="")
+            ttk.Label(card, textvariable=self.v_status, style="Status.TLabel", wraplength=W(640), justify="left").pack(anchor="w")
+            self.v_auto = tk.BooleanVar(value=bool(load_settings().get("check_updates", True)))
+            ttk.Checkbutton(card, text="Check for updates when the program starts", variable=self.v_auto,
+                            command=lambda: save_settings({"check_updates": bool(self.v_auto.get())})).pack(anchor="w", pady=(8, 0))
+            how = ("Running as the compiled program (.exe): the new .exe replaces this one." if getattr(sys, "frozen", False)
+                   else "Running from the Python file: nuorder_client.py is replaced (a .bak copy of the old one is kept).")
+            ttk.Label(card, text=how, style="Muted.TLabel", wraplength=W(640), justify="left").pack(anchor="w", pady=(4, 0))
+            notes = Card(self, text=" What is new in the newest version ", padding=12)
+            notes.pack(fill="both", expand=True, pady=(W(14), 0))
+            nf = ttk.Frame(notes)
+            nf.pack(fill="both", expand=True)
+            self.txt = tk.Text(nf, height=12, wrap="word", state="disabled", font=(UI["mono"], 9))
+            sb = ttk.Scrollbar(nf, orient="vertical", command=self.txt.yview)
+            self.txt.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            self.txt.pack(side="left", fill="both", expand=True)
+            paint_classic(self)
+            self.after(150, self._poll)
+
+        def badge_text(self):
+            return f"Update available: v{self.release['version']}" if self.newer and self.release else f"v{APP_VERSION}"
+
+        def _set_notes(self, text):
+            self.txt.configure(state="normal")
+            self.txt.delete("1.0", "end")
+            self.txt.insert("end", text)
+            self.txt.configure(state="disabled")
+
+        # ---- checking ----
+        def check(self, silent):
+            if self.busy:
+                return
+            self.busy = True
+            self.btn_check.configure(state="disabled")
+            if not silent:
+                self.v_status.set("Checking GitHub ...")
+
+            def work():
+                try:
+                    self.q.put(("checked", fetch_latest_release(), silent))
+                except UserError as e:
+                    self.q.put(("check_failed", str(e), silent))
+                except Exception as e:  # noqa
+                    self.q.put(("check_failed", f"Unexpected error: {e}", silent))
+            threading.Thread(target=work, daemon=True).start()
+
+        def update_now(self):
+            if not self.release or not self.newer:
+                return
+            if self.is_busy():
+                messagebox.showinfo(APP_NAME, "Please wait until the current run has finished, then update.")
+                return
+            frozen = getattr(sys, "frozen", False)
+            asset = self.release["exe"] if frozen else self.release["py"]
+            if not asset:
+                messagebox.showinfo(APP_NAME, "GitHub is still compiling this version (it takes about 5 minutes). "
+                                              "Please try again in a few minutes.")
+                return
+            if not messagebox.askyesno(APP_NAME, f"Update to v{self.release['version']}?\n\nThe program will download the new "
+                                       "version, replace this one and restart.", parent=self.winfo_toplevel()):
+                return
+            target = sys.executable if frozen else os.path.abspath(sys.argv[0])
+            dest = os.path.join(os.path.dirname(target), ("NuORDER Client.new.exe" if frozen else "nuorder_client.new.py"))
+            self.busy = True
+            self.btn_check.configure(state="disabled")
+            self.btn_update.configure(state="disabled")
+            self.bar["value"] = 0
+            self.v_status.set("Downloading ...")
+
+            def work():
+                try:
+                    def prog(got, total):
+                        self.q.put(("progress", got, total))
+                    download_asset(asset, dest, prog, self.stop_event)
+                    self.q.put(("downloaded", dest, target, frozen))
+                except UserError as e:
+                    self.q.put(("update_failed", str(e)))
+                except Exception as e:  # noqa
+                    self.q.put(("update_failed", f"Unexpected error: {e}"))
+            threading.Thread(target=work, daemon=True).start()
+
+        def _poll(self):
+            try:
+                while True:
+                    msg = self.q.get_nowait()
+                    kind = msg[0]
+                    if kind == "progress":
+                        self.bar["maximum"] = msg[2] or 100
+                        self.bar["value"] = msg[1]
+                        if msg[2]:
+                            self.v_status.set(f"Downloading ...  {msg[1] / 1048576:.1f} of {msg[2] / 1048576:.1f} MB")
+                    elif kind == "checked":
+                        self.busy = False
+                        self.btn_check.configure(state="normal")
+                        rel, silent = msg[1], msg[2]
+                        self.release = rel
+                        self.newer = is_newer(rel["version"], APP_VERSION)
+                        self.v_latest.set(f"v{rel['version']}" + ("   (a newer version is available)" if self.newer
+                                                                  else "   (you have the newest version)"))
+                        self._set_notes(rel["notes"] or "(no description)")
+                        self.btn_update.configure(state="normal" if self.newer else "disabled")
+                        if not silent:
+                            self.v_status.set("A new version is available - press 'Update now'." if self.newer
+                                              else "You already have the newest version.")
+                        if self.on_state:
+                            self.on_state(self.newer)
+                    elif kind == "check_failed":
+                        self.busy = False
+                        self.btn_check.configure(state="normal")
+                        if not msg[2]:
+                            self.v_status.set(msg[1])
+                    elif kind == "update_failed":
+                        self.busy = False
+                        self.btn_check.configure(state="normal")
+                        self.btn_update.configure(state="normal")
+                        self.v_status.set(msg[1])
+                        messagebox.showwarning(APP_NAME, msg[1] + f"\n\nYou can also download the new version by hand:\n"
+                                               f"https://github.com/{GITHUB_REPO}/releases/latest")
+                    elif kind == "downloaded":
+                        dest, target, frozen = msg[1], msg[2], msg[3]
+                        try:
+                            (install_exe_update(dest, target) if frozen else install_py_update(dest, target))
+                        except (UserError, OSError, SyntaxError) as e:
+                            self.busy = False
+                            self.btn_check.configure(state="normal")
+                            self.btn_update.configure(state="normal")
+                            self.v_status.set(f"The update could not be installed: {e}")
+                            messagebox.showwarning(APP_NAME, f"The update could not be installed:\n{e}\n\n"
+                                                   f"Download the new version by hand:\nhttps://github.com/{GITHUB_REPO}/releases/latest")
+                            continue
+                        self.v_status.set("Updated. Restarting ...")
+                        messagebox.showinfo(APP_NAME, f"Updated to v{self.release['version']}. The program restarts now.",
+                                            parent=self.winfo_toplevel())
+                        relaunch_program()
+                        self.winfo_toplevel().destroy()
+                        return
+            except queue.Empty:
+                pass
+            self.after(150, self._poll)
+
+    # ------------------------------------------------------------------
     #  TAB 4 - HISTORY
     # ------------------------------------------------------------------
     class HistoryTab(ttk.Frame):
@@ -6131,6 +6443,7 @@ if tk is not None:
         ("rename", "▣", "Image Renaming", "Match a folder of images to the products and copy them renamed and resized"),
         ("pdf", "▦", "MaxMara PDF", "Pull the product pictures (MML codes) out of MaxMara PDF catalogs"),
         ("hist", "◷", "History", "Every run, with a saved copy of each cleaned data file"),
+        ("settings", "⚙", "Settings", "Program update"),
     ]
 
     def build_app(root):
@@ -6232,7 +6545,9 @@ if tk is not None:
         holder.pack(fill="both", expand=True)
         clean, upd, rename, hist = CleanTab(holder), UpdaterTab(holder), RenameTab(holder), HistoryTab(holder)
         pdf = PdfTab(holder)
-        pages = {"clean": clean, "upd": upd, "rename": rename, "pdf": pdf, "hist": hist}
+        settings = SettingsTab(holder)
+        settings.is_busy = lambda: any(t.running for t in (clean, upd, rename, pdf))
+        pages = {"clean": clean, "upd": upd, "rename": rename, "pdf": pdf, "hist": hist, "settings": settings}
         cur = {"key": None}
 
         def show(key):
@@ -6276,12 +6591,20 @@ if tk is not None:
                     apply_theme(root, want, UI["accent"])
             root.after(1500, tick)
 
+        def mark_update(newer):
+            nav["settings"].configure(text="Settings   •  update" if newer else "Settings")
+            update_badge()
+
+        settings.on_state = mark_update
+        cleanup_old_update()
+        if load_settings().get("check_updates", True):
+            root.after(2500, lambda: settings.check(True))
         clean.on_history_change = hist.refresh
         rename.on_history_change = hist.refresh
         show("clean")
         apply_theme(root, UI["mode"], UI["accent"])
         root.after(1500, tick)
-        return dict(show=show, clean=clean, upd=upd, rename=rename, pdf=pdf, hist=hist, pick_theme=pick_theme,
+        return dict(show=show, clean=clean, upd=upd, rename=rename, pdf=pdf, hist=hist, settings=settings, pick_theme=pick_theme,
                     pick_accent=pick_accent)
 
 else:

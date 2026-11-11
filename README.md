@@ -2,9 +2,24 @@
 
 A Windows program that turns brand linesheets and order forms into NuORDER-ready product data, handles product images, updates existing linesheets, and keeps a history of every run.
 
-Current version: **3.4**
+Current version: **3.5**
 
-## How to build and run (Windows)
+## Easiest way: download the compiled program (no building)
+
+GitHub compiles the program by itself every time it changes. Download the newest one here:
+
+**https://github.com/dioniciogarcia/tirsorder/releases/latest/download/NuORDER-Client.exe**
+
+(or open the [Releases page](https://github.com/dioniciogarcia/tirsorder/releases)). Put it anywhere you like and double-click it.
+
+**Updating:** open **Settings** in the program and press **Check for updates**, then **Update now**. The program downloads the newest version from GitHub, replaces itself and restarts. History and settings are kept. It also checks by itself when it starts (you can switch that off in Settings) and shows "Settings • update" in the menu when something new is available.
+
+### How a new version is published
+1. Change `nuorder_client.py` and raise `APP_VERSION` (for example 3.5 → 3.6).
+2. Add a `### Version 3.6` section to the Changelog below (it becomes the release notes).
+3. Push to `main`. GitHub (Actions tab → *Build NuORDER Client*) compiles `NuORDER-Client.exe` on Windows and publishes it as release `v3.6`, together with `nuorder_client.py`. This takes about 5 minutes.
+
+## How to build and run yourself (Windows)
 
 1. Install Python 3 from [python.org](https://www.python.org/downloads/). During setup, tick **"Add python.exe to PATH"**.
 2. Put these three files in the same folder:
@@ -27,6 +42,12 @@ To try the program without building the .exe, double-click `Run_NuORDER_Client_w
 Brand files, results and the built .exe are never uploaded to this repository (see `.gitignore`).
 
 ## Changelog
+
+### Version 3.5 — updates from GitHub
+- New **Settings** page with **Check for updates** and **Update now**: downloads the newest compiled program from this repository's Releases, replaces the running one and restarts it. Shows the release notes of the newest version.
+- Optional check at start-up (on by default), with a "Settings • update" marker in the menu.
+- GitHub compiles `NuORDER-Client.exe` automatically (Actions workflow `Build NuORDER Client`) and publishes it as a Release, so building on the laptop is no longer needed.
+- Running the Python file instead of the .exe also works: Update replaces `nuorder_client.py` (a `.bak` copy is kept).
 
 ### Version 3.4 — MaxMara data format
 - **New data type "MaxMara"** (detected automatically from the Excel columns Exit Collection Description / Ship Window / VPN / Model / Class Description / Variant). Every sheet (MM1, MM2 ...) becomes its own linesheet.

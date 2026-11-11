@@ -1,0 +1,74 @@
+name: Build NuORDER Client
+
+# Every time nuorder_client.py changes on the main branch, GitHub compiles the Windows program
+# and publishes it as a Release. The program's Settings > Update button downloads it from there.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "nuorder_client.py"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read the version
+        id: ver
+        shell: bash
+        run: |
+          v=$(python -c "import re;print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', open('nuorder_client.py', encoding='utf-8').read()).group(1))")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version: $v"
+
+      - name: Install the libraries
+        run: python -m pip install --upgrade openpyxl pillow pymupdf pyinstaller
+
+      - name: Compile the program
+        run: >
+          python -m PyInstaller --noconfirm --clean --onefile --windowed
+          --name "NuORDER-Client"
+          --hidden-import PIL.Image --hidden-import PIL.ImageOps
+          --hidden-import PIL.JpegImagePlugin --hidden-import PIL.PngImagePlugin
+          --hidden-import pymupdf --hidden-import fitz --collect-submodules pymupdf
+          nuorder_client.py
+
+      - name: Check the build
+        shell: bash
+        run: |
+          test -f dist/NuORDER-Client.exe
+          ls -l dist/NuORDER-Client.exe
+          python -c "import ast;ast.parse(open('nuorder_client.py',encoding='utf-8').read())"
+
+      - name: Publish the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          tag="v$v"
+          cp nuorder_client.py dist/nuorder_client.py
+          python - <<'PY' > notes.md
+          import re
+          v = "${{ steps.ver.outputs.version }}"
+          t = open("README.md", encoding="utf-8").read()
+          m = re.search(r"### Version " + re.escape(v) + r"[^\n]*\n(.*?)(?=\n### |\Z)", t, re.S)
+          print(m.group(0).strip() if m else "NuORDER Client " + v)
+          PY
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/NuORDER-Client.exe dist/nuorder_client.py --clobber
+            gh release edit "$tag" --notes-file notes.md --latest
+          else
+            gh release create "$tag" dist/NuORDER-Client.exe dist/nuorder_client.py \
+              --title "NuORDER Client $v" --notes-file notes.md --latest --target "${{ github.sha }}"
+          fi
