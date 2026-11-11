@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tif", ".tiff", ".bmp"}
 
@@ -1785,6 +1785,37 @@ BUILTIN_PROFILES = {
         "season": {"from": "title", "map": _SEASON_MAP},
         "pictures": {"extract": True, "name_from": "BRAND_ID"},
     },
+    "MaxMara": {
+        "name": "MaxMara", "label": "MaxMara", "brand": "MaxMara", "version": 1,
+        "description": "MaxMara bulk linesheets (one sheet per collection: MM 1, MM 2 ...). Add the brand's PDF catalogs "
+                       "to the file list to get the sizes, fabric composition and pictures.",
+        "detect": {"headers_all": ["Exit Collection Description", "Ship Window", "VPN", "Model", "Class Description", "Variant"]},
+        "row_key": ["VPN"],
+        "columns": [
+            {"header": "LINESHEET NAME", "value": "{linesheet}"},
+            {"header": "COLLECTION NAME", "from": "Exit Collection Description"},
+            {"header": "NAME", "join": ["Model", "Class Description"], "sep": " ", "strip_prefix": "MML", "title_first": True},
+            {"header": "STYLE NUMBER", "from": "Model"},
+            {"header": "COLOR", "from": "Color Description"},
+            {"header": "COLOR CODE", "from": "Variant"},
+            {"header": "CATEGORY", "from": "Class Description"},
+            {"header": "VPN", "from": "VPN"},
+            {"header": "ARTICLE", "from": "Article", "optional": True},
+            {"header": "FABRIC DESCRIPTION", "optional": True},
+            {"header": "AVAILABLE FROM", "date": "from"},
+            {"header": "AVAILABLE UNTIL", "date": "until"},
+            {"header": "WHOLESALE USD", "from": ["Cost"], "number": True, "usd": True},
+            {"header": "RETAIL USD", "from": ["Retail"], "number": True, "usd": True},
+            {"header": "SIZES"},
+            {"header": "SEASON", "value": "{season}"},
+            {"header": "BRAND_ID", "join_out": ["STYLE NUMBER", "COLOR CODE"], "sep": "_"},
+        ],
+        "sizes": {"mode": "list", "from": []},
+        "dates": {"window_from": ["SHIP WINDOW"], "anchor_year": "season"},
+        "season": {"from": "file_name", "map": _SEASON_MAP},
+        "pdf": "maxmara",
+        "pictures": {"extract": False, "name_from": "BRAND_ID"},
+    },
     "NuORDER Default Data": {
         "name": "NuORDER Default Data", "label": "NuORDER Default Data", "version": 2,
         "description": "Files already in NuORDER's product data template (one or several rows per product).",
@@ -2199,6 +2230,9 @@ def profile_result(cfg, ctx, L, progress, stop):
         file_season = season_code_from_text(os.path.basename(path))
     season_col = None if season_src in ("file_name", "title") else idx(season_src)
     ls_cols = prof.get("linesheet_from") or []
+    date_year = datetime.date.today().year
+    if dates.get("anchor_year") == "season" and file_season:
+        date_year = year_from_season(file_season)
 
     groups = OrderedDict()
     total = max(last_row - hr, 1)
@@ -2226,6 +2260,10 @@ def profile_result(cfg, ctx, L, progress, stop):
             v = first_of(vals, c["from"]) if c.get("from") else None
             if v is None and c.get("join"):
                 parts = [cell_text(first_of(vals, j)) for j in c["join"]]
+                if parts and c.get("strip_prefix") and parts[0].upper().startswith(c["strip_prefix"].upper()):
+                    parts[0] = parts[0][len(c["strip_prefix"]):]
+                if parts and c.get("title_first"):
+                    parts[0] = parts[0].title()
                 v = c.get("sep", "_").join(p_ for p_ in parts if p_) if all(parts) else None
             if c.get("number"):
                 v = parse_number(v)
@@ -2244,7 +2282,7 @@ def profile_result(cfg, ctx, L, progress, stop):
         if not g["linesheet"] and ls_cols:
             g["linesheet"] = cell_text(first_of(vals, ls_cols))
         if win_src and not g["dates"]:
-            g["dates"] = parse_dates(first_of(vals, win_src), datetime.date.today().year)
+            g["dates"] = parse_dates(first_of(vals, win_src), date_year)
         if dates.get("until_from") and not g["until"]:
             g["until"] = parse_dates(first_of(vals, dates["until_from"]), datetime.date.today().year)
         # sizes (+ the UPC of each size when the brand sends one row per size)
@@ -2288,7 +2326,10 @@ def profile_result(cfg, ctx, L, progress, stop):
         d_from = win[0] if win else None
         d_until = (g["until"][0] if g["until"] else (win[1] if len(win) >= 2 else None))
         if d_from and d_until and d_until < d_from and d_until.year == d_from.year:
-            d_until = d_until.replace(year=d_until.year + 1)
+            if dates.get("anchor_year") == "season":        # 'Dec 1 - Feb 28' of a 2027 season = Dec 2026 - Feb 2027
+                d_from = d_from.replace(year=d_from.year - 1)
+            else:
+                d_until = d_until.replace(year=d_until.year + 1)
         pairs = g["pairs"]
         if sz.get("sort"):
             order = {s_: k for k, s_ in enumerate(sort_sizes([p_[0] for p_ in pairs]))}
@@ -2328,6 +2369,8 @@ def profile_result(cfg, ctx, L, progress, stop):
         res.rows.append({"values": vals, "sizes": sizes, "upcs": upcs, "src_rows": g["rows"], "pic_name": pic_name})
     if usd_filled:
         L(f"{usd_filled} USD price cells hold the 0.01 placeholder (price missing or 0).")
+    if prof.get("pdf") == "maxmara":
+        apply_maxmara_pdf(res, cfg, ctx, L, stop, progress)
 
     headers = []
     for c in columns:
@@ -2351,6 +2394,65 @@ def profile_result(cfg, ctx, L, progress, stop):
         extract_row_pictures(path, sheet, row_to_name, ctx, L, only_columns=only)
     validate_rows(res, L)
     return res
+
+
+def _composition_warnings(products, L):
+    """A composition whose percentages do not add up to 100 is probably cut off in the PDF itself."""
+    for model, c in sorted(products.items()):
+        for seg in (c.get("fabric") or "").split(";"):
+            nums = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*%", seg)]
+            if nums and abs(sum(nums) - 100) > 0.01:
+                L(f"  CHECK fabric of {model}: '{seg.strip()}' adds up to {sum(nums):g}% - the PDF text may be cut off.")
+
+
+def apply_maxmara_pdf(res, cfg, ctx, L, stop, progress):
+    """Sizes, fabric, article number and pictures of a MaxMara data file come from the brand's PDF catalogs."""
+    pdfs = list(cfg.get("pdf_paths") or [])
+    if not pdfs:
+        if cfg.get("extract_pictures", True):
+            L("NOTE: no MaxMara PDF catalog was added, so SIZE 1..., FABRIC DESCRIPTION and the pictures stay empty. "
+              "Add the PDF file(s) to the list and run again.")
+        return
+    if not pymupdf_available():
+        L("NOTE: the PDF library (PyMuPDF) is missing - run Build_NuORDER_Client.bat again. Sizes and pictures were skipped.")
+        return
+    cache = ctx.setdefault("maxmara_pdf", {})
+    key = tuple(pdfs)
+    if cache.get("key") != key:
+        L(f"Reading {len(pdfs)} PDF catalog(s) ...")
+        products, images = read_maxmara_catalogs(pdfs, L, stop, progress)
+        cache.update(key=key, products=products, images=images, used=set())
+        L(f"  {len(products)} products and {len(images)} pictures found in the PDFs.")
+        _composition_warnings(products, L)
+    products, images, used = cache["products"], cache["images"], cache["used"]
+    no_model, no_size, saved = [], [], 0
+    for row in res.rows:
+        v = row["values"]
+        model, var = clean_text(v.get("STYLE NUMBER")), clean_text(v.get("COLOR CODE"))
+        c = products.get(model)
+        if not c:
+            no_model.append(model)
+            continue
+        used.add(model)
+        sizes = c["variants"].get(var)
+        if not sizes:
+            no_size.append(f"{model}_{var}")
+            sizes = [x for x in c["sizes"] if any(x in s_ for s_ in c["variants"].values())]
+        row["sizes"] = list(sizes)
+        if c.get("fabric"):
+            v["FABRIC DESCRIPTION"] = c["fabric"]
+        if c.get("art"):
+            v["ARTICLE"] = c["art"]
+        if cfg.get("extract_pictures", True) and model in images and row.get("pic_name"):
+            if save_picture(ctx, row["pic_name"], ".jpg", images[model]):
+                saved += 1
+    L(f"PDF data applied: sizes for {len(res.rows) - len(no_model)} of {len(res.rows)} rows, {saved} picture(s) saved.")
+    if no_model:
+        L("  NOT in the PDFs (no sizes / fabric / picture): " + ", ".join(sorted(set(no_model))))
+    if no_size:
+        L("  Color not listed in the PDF size grid (the sizes of the other colors were used): " + ", ".join(no_size))
+
+
 
 
 # ======================================================================
@@ -2740,6 +2842,17 @@ def scan_brand_folder(folder, recurse=True):
     return sorted(data, key=lambda p_: natural_key(os.path.basename(p_))), n_img
 
 
+def scan_brand_pdfs(folder, recurse=True):
+    """The PDF files of a brand's folder (MaxMara catalogs ...)."""
+    out = []
+    walker = os.walk(folder) if recurse else [(folder, [], os.listdir(folder))]
+    for root, _dirs, files in walker:
+        for f in files:
+            if f.lower().endswith(".pdf") and not f.startswith(("~$", ".")):
+                out.append(os.path.join(root, f))
+    return sorted(out, key=lambda p_: natural_key(os.path.basename(p_)))
+
+
 def auto_file_settings(path, profiles):
     """Everything the program can work out by itself about one file (the window lets you change it)."""
     label, prof_name, sheet = identify_file(path, profiles)
@@ -2811,7 +2924,8 @@ def file_job(st, opts, profiles):
     base = dict(path=st["path"], sheet=st.get("sheet"), label=st.get("label"),
                 linesheet_override=opts.get("linesheet_override", ""), season=opts.get("season", ""),
                 date_format=opts.get("date_format", "EXCEL"),
-                extract_pictures=opts.get("extract_pictures", True), skip_existing=opts.get("skip_existing", True))
+                extract_pictures=opts.get("extract_pictures", True), skip_existing=opts.get("skip_existing", True),
+                pdf_paths=list(opts.get("pdf_paths") or []))
     if st.get("profile_name") and st["profile_name"] in profiles:
         base["profile"] = profiles[st["profile_name"]]
         return base
@@ -3138,6 +3252,157 @@ def pymupdf_available():
         return False
 
 
+def _pdf_pick_image(fitz, page, images, position):
+    """Randy's rule: the one picture that sits just below the product code (20-60 pt) and slightly to its left."""
+    found = []
+    for image in images:
+        box = fitz.Rect(image["bbox"]) * page.rotation_matrix
+        dx = (box.x0 + box.x1 - position.x0 - position.x1) / 2
+        dy = box.y0 - position.y0
+        if 20 < dy < 60 and -100 < dx < 10 and box.width > 45:
+            found.append(image)
+    return found
+
+
+def _pdf_lines(words, gap=1.5):
+    """[(rect, text)] -> list of text lines (words with nearly the same top edge belong together)."""
+    lines, cur, last = [], [], None
+    for r, t in sorted(words, key=lambda w: (round(w[0].y0, 1), w[0].x0)):
+        if last is not None and r.y0 - last > gap:
+            lines.append(cur)
+            cur = []
+        cur.append((r, t))
+        last = r.y0
+    if cur:
+        lines.append(cur)
+    return [" ".join(t for _r, t in sorted(l, key=lambda w: w[0].x0)) for l in lines]
+
+
+def _fabric_from_lines(lines):
+    """Keeps the composition lines (the ones with a %), glues a wrapped word back on, drops repeats."""
+    out = []
+    for ln in lines:
+        if "%" in ln:
+            if ln not in out:
+                out.append(ln)
+        elif out and re.search(r"[%,]\s*$", out[-1]):
+            out[-1] = out[-1] + " " + ln
+    txt = "; ".join(out)
+    return re.sub(r"\s*:\s*", ": ", txt).strip()
+
+
+def _pdf_catalog_cells(fitz, page):
+    """Reads every product box of a MaxMara catalog page: model, article, fabric, sizes per color."""
+    words = [(fitz.Rect(w[:4]) * page.rotation_matrix, w[4]) for w in page.get_text("words")]
+    anchors = [(r, t) for r, t in words if re.fullmatch(r"\d{10,14}", t)]
+    cols = [(r, t) for r, t in words if t == "Col."]
+    cells = []
+    for ar, root in anchors:
+        mine = [(r, t) for r, t in cols if r.y0 > ar.y0 and 0 <= ar.x0 - r.x0 < 150]
+        if not mine:
+            continue
+        colr = min(mine, key=lambda w: w[0].y0 - ar.y0)[0]
+        cells.append(dict(root=root, a=ar, col=colr, left=colr.x0 - 4))
+    page_w = page.rect.width if page.rotation in (0, 180) else page.rect.height
+    page_h = page.rect.height if page.rotation in (0, 180) else page.rect.width
+    page_w, page_h = max(page_w, page.rect.width), max(page_h, page.rect.height)
+    out = []
+    for c in cells:
+        row = sorted([o for o in cells if abs(o["a"].y0 - c["a"].y0) < 6], key=lambda o: o["left"])
+        nxt = [o["left"] for o in row if o["left"] > c["left"] + 20]
+        right = min(nxt) if nxt else page_w
+        below = [o["a"].y0 for o in cells if o["a"].y0 > c["a"].y0 + 50 and abs(o["left"] - c["left"]) < 30]
+        top, bottom = c["a"].y0 - 6, (min(below) - 6 if below else page_h)
+        inside = [(r, t) for r, t in words if c["left"] <= r.x0 < right and top <= r.y0 < bottom]
+        info = dict(root=c["root"], model="", art="", fabric="", sizes=[], variants={})
+        for r, t in inside:
+            if re.fullmatch(r"MML[A-Z0-9]+", t) and abs(r.y0 - c["a"].y0) < 4:
+                info["model"] = t
+        arts = [(r, t) for r, t in inside if t == "Art." and abs(r.y0 - c["a"].y0) < 4]
+        if arts:
+            ar_ = arts[0][0]
+            nxt_w = [(r, t) for r, t in inside if abs(r.y0 - ar_.y0) < 4 and r.x0 > ar_.x1]
+            if nxt_w:
+                info["art"] = min(nxt_w, key=lambda w: w[0].x0)[1]
+        sell = [r for r, t in inside if t == "Sell-in"]
+        rcol = min(r.x0 for r in sell) if sell else c["left"] + 0.55 * (right - c["left"])
+        block = [(r, t) for r, t in inside if c["a"].y0 + 6 < r.y0 < c["a"].y0 + 100 and r.x0 < rcol - 2]
+        info["fabric"] = _fabric_from_lines(_pdf_lines(block))
+        # size grid
+        cy = c["col"].y0
+        tot = [r for r, t in inside if t == "Totali" and abs(r.y0 - cy) < 3]
+        tot_x = min(r.x0 for r in tot) if tot else right
+        head = sorted([(r, t) for r, t in inside if abs(r.y0 - cy) < 3 and c["col"].x1 <= r.x0 < tot_x - 2],
+                      key=lambda w: w[0].x0)
+        info["sizes"] = [t for _r, t in head]
+        for r, t in inside:
+            if r.y0 > cy + 3 and abs(r.x0 - c["col"].x0) < 8 and re.fullmatch(r"[0-9A-Z]{2,4}", t):
+                qty = [(r2, t2) for r2, t2 in inside if abs(r2.y0 - r.y0) < 3 and r2.x0 > r.x1 and r2.x0 < tot_x - 2]
+                have = []
+                for r2, t2 in qty:
+                    if not re.fullmatch(r"\d+", t2) or int(t2) <= 0 or not head:
+                        continue
+                    best = min(head, key=lambda h_: abs((h_[0].x0 + h_[0].x1) / 2 - (r2.x0 + r2.x1) / 2))
+                    have.append(best[1])
+                info["variants"][t] = [x for x in info["sizes"] if x in have]
+        out.append(info)
+    return out
+
+
+def read_maxmara_catalogs(pdfs, L, stop, progress=None):
+    """-> (products, images): products[model] = {art, fabric, sizes, variants{code: [sizes]}},
+    images[model] = JPG bytes of its picture.  The first appearance of a model wins."""
+    fitz = _load_pymupdf()
+    from PIL import Image
+    products, images = {}, {}
+    for fi, source in enumerate(pdfs, 1):
+        name = os.path.basename(source)
+        try:
+            with fitz.open(source) as doc:
+                if doc.needs_pass:
+                    raise ValueError("the PDF is protected with a password.")
+                for index, page in enumerate(doc):
+                    if stop.is_set():
+                        raise UserError("Stopped by user.")
+                    if progress:
+                        progress(int(10 * ((fi - 1) + (index + 1) / max(len(doc), 1)) / len(pdfs)), 100)
+                    for cell in _pdf_catalog_cells(fitz, page):
+                        m_ = cell["model"]
+                        if not m_:
+                            continue
+                        if m_ not in products:
+                            products[m_] = cell
+                        else:                       # the same model on another page: add its other colors
+                            for v_, sz_ in cell["variants"].items():
+                                products[m_]["variants"].setdefault(v_, sz_)
+                            for f_ in ("art", "fabric"):
+                                if not products[m_][f_] and cell[f_]:
+                                    products[m_][f_] = cell[f_]
+                    names = [(w[4], fitz.Rect(w[:4]) * page.rotation_matrix)
+                             for w in page.get_text("words") if re.fullmatch(r"MML[A-Z0-9]+", w[4])]
+                    imgs = page.get_image_info(xrefs=True)
+                    for code, position in names:
+                        if code in images:
+                            continue
+                        found = _pdf_pick_image(fitz, page, imgs, position)
+                        if len(found) != 1 or not found[0]["xref"]:
+                            L(f"  CHECK {code} ({name}, page {index + 1}): could not identify one single picture.")
+                            continue
+                        try:
+                            data = doc.extract_image(found[0]["xref"])["image"]
+                            with Image.open(io.BytesIO(data)) as original:
+                                buf = io.BytesIO()
+                                original.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
+                            images[code] = buf.getvalue()
+                        except Exception as e:  # noqa
+                            L(f"  ERROR {code} ({name}, page {index + 1}): {e}")
+        except UserError:
+            raise
+        except Exception as e:  # noqa
+            L(f"ERROR in {name}: {e}")
+    return products, images
+
+
 def extract_pdf_images(pdfs, dest, L, stop, progress=None, resize_px=None):
     """Save one JPG per MML code found in the PDFs. The first appearance of a code wins and existing files are never
     overwritten. Returns a dict of counters."""
@@ -3178,13 +3443,7 @@ def extract_pdf_images(pdfs, dest, L, stop, progress=None, resize_px=None):
                             stats["existing"] += 1
                             L(f"  {code}: already exists - kept.")
                             continue
-                        candidates = []
-                        for image in images:
-                            box = fitz.Rect(image["bbox"]) * page.rotation_matrix
-                            dx = (box.x0 + box.x1 - position.x0 - position.x1) / 2
-                            dy = box.y0 - position.y0
-                            if 20 < dy < 60 and -100 < dx < 10 and box.width > 45:
-                                candidates.append(image)
+                        candidates = _pdf_pick_image(fitz, page, images, position)
                         if len(candidates) != 1 or not candidates[0]["xref"]:
                             stats["warnings"] += 1
                             stats["review"].append(f"{code}  ({name}, page {index + 1})")
@@ -4630,6 +4889,7 @@ if tk is not None:
             super().__init__(parent)
             self.profiles, problems = load_profiles()
             self.states = OrderedDict()          # path -> per-file settings
+            self.pdfs = []                       # PDF catalogs (sizes / fabric / pictures for MaxMara files)
             self.iid_path = {}
             self.cur = None
             self.labels = []
@@ -4642,7 +4902,7 @@ if tk is not None:
             body = sf.inner
 
             # --- 1. files ---
-            f1 = Card(body, text=" 1.  Source files   —   one file, several files (one master file), or a whole brand folder ", padding=12)
+            f1 = Card(body, text=" 1.  Source files   —   one file, several files (one master file), or a whole brand folder   (MaxMara: add its PDFs too) ", padding=12)
             f1.pack(fill="x", padx=W(8), pady=(W(14), 0))
             bf = ttk.Frame(f1)
             bf.pack(fill="x")
@@ -4826,8 +5086,9 @@ if tk is not None:
 
         # ---------------- file list ----------------
         def add_files(self):
-            paths = filedialog.askopenfilenames(title="Choose one or several Excel / CSV files",
-                                                filetypes=[("Excel / CSV", "*.xlsx *.xlsm *.xlsb *.csv"), ("All files", "*.*")])
+            paths = filedialog.askopenfilenames(title="Choose one or several Excel / CSV files (and the brand's PDF catalogs)",
+                                                filetypes=[("Excel / CSV / PDF", "*.xlsx *.xlsm *.xlsb *.csv *.pdf"),
+                                                           ("All files", "*.*")])
             if paths:
                 self.add_paths(paths)
 
@@ -4838,6 +5099,7 @@ if tk is not None:
             self.status.set("Scanning the folder ...")
             self.update_idletasks()
             data, n_img = scan_brand_folder(folder)
+            pdfs = scan_brand_pdfs(folder)
             if not data and not n_img:
                 messagebox.showinfo(APP_NAME, "No data files (.xlsx .xlsm .xlsb .csv) or images were found in that folder.")
                 self.status.set("Ready.")
@@ -4848,8 +5110,8 @@ if tk is not None:
                 self.v_rename.set(folder)
                 self.v_rename_sub.set(True)
             if data:
-                self.add_paths(data)
-            msg = (f"Brand folder: {len(data)} data file(s) and {n_img} image(s) found in {folder} (sub-folders included)."
+                self.add_paths(data + pdfs)
+            msg = (f"Brand folder: {len(data)} data file(s), {len(pdfs)} PDF(s) and {n_img} image(s) found in {folder} (sub-folders included)."
                    + ("  The images will be matched and renamed (see '2. Images')." if n_img else ""))
             self.write_log(msg)
             self.status.set(f"Found {len(data)} data file(s) and {n_img} image(s).")
@@ -4867,17 +5129,18 @@ if tk is not None:
 
         def tint_tree(self):
             c = UI["c"]
-            for tag, col in (("profile", c["good"]), ("joor", c["info"]), ("general", c["fg"]), ("bad", c["bad"])):
+            for tag, col in (("profile", c["good"]), ("joor", c["info"]), ("general", c["fg"]), ("bad", c["bad"]), ("pdf", c["info"])):
                 self.tree.tag_configure(tag, foreground=col)
 
         def badge_text(self):
             n = len(self.states)
             if not n:
-                return ""
+                return f"{len(self.pdfs)} PDF{'s' if len(self.pdfs) != 1 else ''}" if self.pdfs else ""
             brands = {st.get("label") for st in self.states.values()
                       if st.get("profile_name") or (st.get("label") or "").startswith("JOOR")}
-            return f"{n} file{'s' if n != 1 else ''}" + (f"  ·  {len(brands)} brand{'s' if len(brands) != 1 else ''} detected"
-                                                         if brands else "")
+            return (f"{n} file{'s' if n != 1 else ''}" + (f"  ·  {len(self.pdfs)} PDF{'s' if len(self.pdfs) != 1 else ''}"
+                                                          if self.pdfs else "")
+                    + (f"  ·  {len(brands)} brand{'s' if len(brands) != 1 else ''} detected" if brands else ""))
 
         def update_image_summary(self):
             parts = []
@@ -4895,7 +5158,14 @@ if tk is not None:
             self.save_current()
             first_new = None
             for p in paths:
-                if p in self.states:
+                if p in self.states or p in self.pdfs:
+                    continue
+                if os.path.splitext(p)[1].lower() == ".pdf":
+                    self.pdfs.append(p)
+                    iid = self.tree.insert("", "end", values=(os.path.basename(p), "PDF catalog", "support file"),
+                                           tags=("pdf",))
+                    self.iid_path[iid] = p
+                    first_new = first_new or iid
                     continue
                 try:
                     check_extension(p)
@@ -4914,7 +5184,7 @@ if tk is not None:
                 first_new = first_new or iid
             if not self.v_out.get() and self.states:
                 self.v_out.set(os.path.dirname(next(iter(self.states))))
-            self.status.set(f"{len(self.states)} file(s) in the list.")
+            self.status.set(f"{len(self.states)} file(s) in the list" + (f" + {len(self.pdfs)} PDF(s)." if self.pdfs else "."))
             self.update_linesheet_box()
             if first_new:
                 self.tree.selection_set(first_new)
@@ -4924,6 +5194,8 @@ if tk is not None:
             for iid in self.tree.selection():
                 p = self.iid_path.pop(iid, None)
                 self.states.pop(p, None)
+                if p in self.pdfs:
+                    self.pdfs.remove(p)
                 self.tree.delete(iid)
                 if p == self.cur:
                     self.cur = None
@@ -4938,6 +5210,7 @@ if tk is not None:
             for iid in self.tree.get_children():
                 self.tree.delete(iid)
             self.states.clear()
+            self.pdfs.clear()
             self.iid_path.clear()
             self.cur = None
             self.update_linesheet_box()
@@ -4966,6 +5239,17 @@ if tk is not None:
             if p == self.cur:
                 return
             self.save_current()
+            if p in self.pdfs:
+                self.cur = None
+                self.v_selname.set(os.path.basename(p))
+                self.v_type.set("PDF catalog")
+                self.v_typeinfo.set("The brand's PDF catalog. MaxMara files use it to fill the sizes, the fabric composition "
+                                    "and the pictures (named BRAND_ID_01). Other brands ignore it.")
+                self.v_picinfo.set("")
+                self.cb_sheet.configure(values=[])
+                self.v_sheet.set("")
+                self.show_mapping(False)
+                return
             self.load_state(p)
 
         def _row_of(self, path):
@@ -5135,7 +5419,8 @@ if tk is not None:
         def collect_cfg(self):
             self.save_current()
             if not self.states:
-                messagebox.showwarning(APP_NAME, "Please add at least one file (section 1).")
+                messagebox.showwarning(APP_NAME, "Please add at least one Excel / CSV file (section 1)."
+                                       + ("\n\nThe PDF catalogs are only used together with the brand's data file." if self.pdfs else ""))
                 return None
             problems = []
             first_bad = None
@@ -5171,7 +5456,8 @@ if tk is not None:
                 brand_source="code" if self.v_brandsrc.get().startswith("Color code") else "name",
                 brand_upper=self.v_upper.get(), black_unavailable=self.v_black.get(), require_value=self.v_reqval.get(),
                 price_currency="AUTO" if self.v_pricecur.get() == "Automatic" else self.v_pricecur.get(),
-                download=self.v_download.get(), extract_pictures=self.v_pics.get(), skip_existing=self.v_skip.get())
+                download=self.v_download.get(), extract_pictures=self.v_pics.get(), skip_existing=self.v_skip.get(),
+                pdf_paths=list(self.pdfs))
             rename_dir = self.v_rename.get().strip()
             if rename_dir and not os.path.isdir(rename_dir):
                 messagebox.showwarning(APP_NAME, "The folder of images to rename does not exist (section 2. Images).")
