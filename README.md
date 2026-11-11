@@ -43,6 +43,12 @@ Brand files, results and the built .exe are never uploaded to this repository (s
 
 ## Changelog
 
+### Version 3.6 — MaxMara PDFs everywhere
+- The first tab (Clean Data & Images) now has a "MaxMara PDF catalogs" block in the Images section: add the PDFs, tick to extract the pictures and/or fill sizes and fabric from them.
+- The Image Renaming tab can also import MaxMara PDFs.
+- "Pick a brand folder" now also finds the PDFs in the folder.
+- Pictures taken from PDFs follow the same resizing rules as every other picture (shortest side, JPG, Lanczos).
+
 ### Version 3.5 — updates from GitHub
 - New **Settings** page with **Check for updates** and **Update now**: downloads the newest compiled program from this repository's Releases, replaces the running one and restarts it. Shows the release notes of the newest version.
 - Optional check at start-up (on by default), with a "Settings • update" marker in the menu.

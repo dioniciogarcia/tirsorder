@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 GITHUB_REPO = "dioniciogarcia/tirsorder"          # where new versions are published (Releases)
 RELEASE_EXE = "NuORDER-Client.exe"                # the program GitHub compiles for every version
 RELEASE_PY = "nuorder_client.py"
@@ -2414,10 +2414,13 @@ def _composition_warnings(products, L):
 def apply_maxmara_pdf(res, cfg, ctx, L, stop, progress):
     """Sizes, fabric, article number and pictures of a MaxMara data file come from the brand's PDF catalogs."""
     pdfs = list(cfg.get("pdf_paths") or [])
+    want_data, want_pics = cfg.get("pdf_data", True), cfg.get("pdf_pictures", True)
     if not pdfs:
         if cfg.get("extract_pictures", True):
             L("NOTE: no MaxMara PDF catalog was added, so SIZE 1..., FABRIC DESCRIPTION and the pictures stay empty. "
               "Add the PDF file(s) to the list and run again.")
+        return
+    if not want_data and not want_pics:
         return
     if not pymupdf_available():
         L("NOTE: the PDF library (PyMuPDF) is missing - run Build_NuORDER_Client.bat again. Sizes and pictures were skipped.")
@@ -2440,17 +2443,20 @@ def apply_maxmara_pdf(res, cfg, ctx, L, stop, progress):
             no_model.append(model)
             continue
         used.add(model)
-        sizes = c["variants"].get(var)
-        if not sizes:
-            no_size.append(f"{model}_{var}")
-            sizes = [x for x in c["sizes"] if any(x in s_ for s_ in c["variants"].values())]
-        row["sizes"] = list(sizes)
-        if c.get("fabric"):
-            v["FABRIC DESCRIPTION"] = c["fabric"]
-        if cfg.get("extract_pictures", True) and model in images and row.get("pic_name"):
-            if save_picture(ctx, row["pic_name"], ".jpg", images[model]):
+        if want_data:
+            sizes = c["variants"].get(var)
+            if not sizes:
+                no_size.append(f"{model}_{var}")
+                sizes = [x for x in c["sizes"] if any(x in s_ for s_ in c["variants"].values())]
+            row["sizes"] = list(sizes)
+            if c.get("fabric"):
+                v["FABRIC DESCRIPTION"] = c["fabric"]
+        if want_pics and model in images and row.get("pic_name"):
+            ext, data = images[model]
+            if save_picture(ctx, row["pic_name"], ext, data):      # same resizing / naming as every other picture
                 saved += 1
-    L(f"PDF data applied: sizes for {len(res.rows) - len(no_model)} of {len(res.rows)} rows, {saved} picture(s) saved.")
+    L("PDF data applied: " + (f"sizes for {len(res.rows) - len(no_model)} of {len(res.rows)} rows, " if want_data else "")
+      + (f"{saved} picture(s) saved." if want_pics else "pictures skipped."))
     if no_model:
         L("  NOT in the PDFs (no sizes / fabric / picture): " + ", ".join(sorted(set(no_model))))
     if no_size:
@@ -3053,7 +3059,8 @@ def file_job(st, opts, profiles):
                 linesheet_override=opts.get("linesheet_override", ""), season=opts.get("season", ""),
                 date_format=opts.get("date_format", "EXCEL"),
                 extract_pictures=opts.get("extract_pictures", True), skip_existing=opts.get("skip_existing", True),
-                pdf_paths=list(opts.get("pdf_paths") or []))
+                pdf_paths=list(opts.get("pdf_paths") or []), pdf_data=opts.get("pdf_data", True),
+                pdf_pictures=opts.get("pdf_pictures", True))
     if st.get("profile_name") and st["profile_name"] in profiles:
         base["profile"] = profiles[st["profile_name"]]
         return base
@@ -3283,6 +3290,32 @@ def products_for_renaming(path, profiles, L, stop):
     return out
 
 
+def pdf_pictures_for_results(results, pdfs, ctx, L, stop):
+    """Rename page: saves the picture of each MaxMara product (found in the PDF catalogs) as BRAND_ID_01, resized like all images."""
+    if not pdfs:
+        return 0
+    if not pymupdf_available():
+        L("NOTE: the PDF library (PyMuPDF) is missing - run Build_NuORDER_Client.bat again. PDF pictures were skipped.")
+        return 0
+    L(f"Reading {len(pdfs)} PDF catalog(s) ...")
+    products, images = read_maxmara_catalogs(pdfs, L, stop)
+    L(f"  {len(products)} products and {len(images)} pictures found in the PDFs.")
+    saved = missing = 0
+    for res in results:
+        for r in res.rows:
+            v = r["values"]
+            model = next((clean_text(v.get(k)) for k in ("NAME", "STYLE NUMBER", "MODEL") if clean_text(v.get(k)) in images), "")
+            name = r.get("pic_name") or v.get("BRAND_ID") or v.get("STYLE NUMBER")
+            if not model or not name:
+                missing += 1
+                continue
+            ext, data = images[model]
+            if save_picture(ctx, str(name), ext, data):
+                saved += 1
+    L(f"PDF pictures: {saved} saved" + (f", {missing} product(s) have no picture in the PDFs." if missing else "."))
+    return saved
+
+
 def run_rename(cfg, log, progress, stop):
     lines = []
 
@@ -3290,7 +3323,8 @@ def run_rename(cfg, log, progress, stop):
         lines.append(msg)
         log(msg)
 
-    img_folder = cfg["images_dir"]
+    pdfs = list(cfg.get("pdf_paths") or [])
+    img_folder = cfg.get("images_dir") or (os.path.dirname(pdfs[0]) if pdfs else "")
     out_dir = os.path.join(img_folder, "Renamed Images")
     os.makedirs(out_dir, exist_ok=True)
     L(f"=== {APP_NAME} {APP_VERSION} - Image Renaming ===")
@@ -3321,8 +3355,10 @@ def run_rename(cfg, log, progress, stop):
     ctx = {"out_dir": out_dir, "img_dir": out_dir, "skip_existing": cfg.get("skip_existing", True),
            "pic_hashes": {}, "pic_count": {}, "pic_stats": {"saved": 0, "existing": 0, "repeat": 0},
            "resize_px": cfg.get("resize_px")}
+    pdf_saved = pdf_pictures_for_results(results, pdfs, ctx, L, stop) if pdfs else 0
     stats = rename_images(results, img_folder, cfg.get("recurse", True), ctx, L, stop,
                           lambda d, t: progress(20 + int(80 * d / max(t, 1)), 100)) or {}
+    stats["copied"] = stats.get("copied", 0) + pdf_saved
     rl = resize_log_line(ctx)
     if rl:
         L(rl)
@@ -3347,7 +3383,7 @@ def run_rename(cfg, log, progress, stop):
             "notes": f"{stats.get('copied', 0)} image(s) renamed, {stats.get('skipped', 0)} skipped as unclear, "
                      f"{stats.get('images', 0)} found",
         })
-    summary = [f"{stats.get('copied', 0)} image(s) renamed into 'Renamed Images'.",
+    summary = [f"{stats.get('copied', 0)} image(s) saved into 'Renamed Images'" + (f" ({pdf_saved} from the PDFs)." if pdf_saved else "."),
                f"{stats.get('images', 0)} image(s) found, {n_products} product(s) read."]
     if ctx["pic_stats"]["existing"]:
         summary.append(f"{ctx['pic_stats']['existing']} were already there (skipped).")
@@ -3477,11 +3513,25 @@ def _pdf_catalog_cells(fitz, page):
     return out
 
 
+def _norm_pdf_image(info):
+    """PyMuPDF image info -> (extension, bytes). JPG / PNG are kept as they are; anything else becomes a JPG."""
+    ext = str(info.get("ext") or "").lower()
+    data = info["image"]
+    if ext in ("jpg", "jpeg"):
+        return ".jpg", data
+    if ext == "png":
+        return ".png", data
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as im:
+        buf = io.BytesIO()
+        im.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
+    return ".jpg", buf.getvalue()
+
+
 def read_maxmara_catalogs(pdfs, L, stop, progress=None):
     """-> (products, images): products[model] = {art, fabric, sizes, variants{code: [sizes]}},
-    images[model] = JPG bytes of its picture.  The first appearance of a model wins."""
+    images[model] = (extension, bytes) of its picture, as stored in the PDF.  The first appearance of a model wins."""
     fitz = _load_pymupdf()
-    from PIL import Image
     products, images = {}, {}
     for fi, source in enumerate(pdfs, 1):
         name = os.path.basename(source)
@@ -3517,11 +3567,7 @@ def read_maxmara_catalogs(pdfs, L, stop, progress=None):
                             L(f"  CHECK {code} ({name}, page {index + 1}): could not identify one single picture.")
                             continue
                         try:
-                            data = doc.extract_image(found[0]["xref"])["image"]
-                            with Image.open(io.BytesIO(data)) as original:
-                                buf = io.BytesIO()
-                                original.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
-                            images[code] = buf.getvalue()
+                            images[code] = _norm_pdf_image(doc.extract_image(found[0]["xref"]))
                         except Exception as e:  # noqa
                             L(f"  ERROR {code} ({name}, page {index + 1}): {e}")
         except UserError:
@@ -3536,6 +3582,7 @@ def extract_pdf_images(pdfs, dest, L, stop, progress=None, resize_px=None):
     overwritten. Returns a dict of counters."""
     fitz = _load_pymupdf()
     stats = dict(saved=0, duplicates=0, existing=0, warnings=0, pages=0, review=[])
+    rctx = {"resize_px": resize_px}
     seen = set()
     os.makedirs(dest, exist_ok=True)
     for fi, source in enumerate(pdfs, 1):
@@ -3578,21 +3625,29 @@ def extract_pdf_images(pdfs, dest, L, stop, progress=None, resize_px=None):
                             L(f"  CHECK {code} ({name}, page {index + 1}): could not identify one single picture.")
                             continue
                         try:
-                            data = document.extract_image(candidates[0]["xref"])["image"]
-                            from PIL import Image
-                            with Image.open(io.BytesIO(data)) as original:
-                                buf = io.BytesIO()
-                                original.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
-                            try:
-                                with open(target, "xb") as out:
-                                    out.write(buf.getvalue())
-                            except FileExistsError:
-                                stats["existing"] += 1
-                                continue
+                            _ext, data = _norm_pdf_image(document.extract_image(candidates[0]["xref"]))
+                            px = _resize_px(rctx)
+                            done = False
+                            if px:                       # same resizing as every other picture of the program
+                                try:
+                                    resize_to_jpg(data, target, px)
+                                    _note_resize(rctx, True)
+                                    done = True
+                                except Exception:
+                                    _note_resize(rctx, False)
+                            if not done:
+                                from PIL import Image
+                                with Image.open(io.BytesIO(data)) as original:
+                                    buf = io.BytesIO()
+                                    original.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
+                                try:
+                                    with open(target, "xb") as out:
+                                        out.write(buf.getvalue())
+                                except FileExistsError:
+                                    stats["existing"] += 1
+                                    continue
                             stats["saved"] += 1
                             L(f"  saved {code}.jpg")
-                            if resize_px and pillow_available():
-                                resize_to_jpg(target, target, resize_px)
                         except UserError:
                             raise
                         except Exception as e:  # noqa
@@ -3604,6 +3659,7 @@ def extract_pdf_images(pdfs, dest, L, stop, progress=None, resize_px=None):
         except Exception as e:  # noqa
             stats["warnings"] += 1
             L(f"ERROR in {name}: {e}")
+    stats["resize_line"] = resize_log_line(rctx)
     return stats
 
 
@@ -3626,6 +3682,8 @@ def run_pdf_images(cfg, log, progress, stop):
         raise UserError("The Pillow library is missing. Run Build_NuORDER_Client.bat again.")
     st = extract_pdf_images(cfg["pdfs"], dest, L, stop, progress, cfg.get("resize_px"))
     L("")
+    if st.get("resize_line"):
+        L(st["resize_line"])
     L(f"Saved: {st['saved']}   Repeated codes skipped: {st['duplicates']}   Already there: {st['existing']}   "
       f"Warnings: {st['warnings']}")
     if st["review"]:
@@ -5196,9 +5254,24 @@ if tk is not None:
             ttk.Label(f5, text="All images are saved in the 'Images' sub-folder as BRAND_ID_01, BRAND_ID_02 ... "
                                "(Ferragamo: STYLE NUMBER_01 ...). Several link columns: link 1 = _01, link 2 = _02 ...",
                       style="Muted.TLabel").grid(row=8, column=0, columnspan=3, sticky="w")
-            resize_row(f5, self.v_resize, self.v_resize_px).grid(row=9, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            ttk.Label(f5, text="MaxMara PDF catalogs", style="Info.TLabel").grid(row=9, column=0, columnspan=3, sticky="w", pady=(14, 0))
+            pr = ttk.Frame(f5)
+            pr.grid(row=10, column=0, columnspan=3, sticky="w", pady=(4, 0))
+            ttk.Button(pr, text="Add MaxMara PDFs...", command=self.add_pdfs).pack(side="left")
+            ttk.Button(pr, text="Remove all PDFs", command=self.clear_pdfs).pack(side="left", padx=6)
+            self.v_pdfinfo = tk.StringVar(value="No PDFs added.")
+            ttk.Label(pr, textvariable=self.v_pdfinfo, style="Muted.TLabel").pack(side="left", padx=6)
+            self.v_pdf_pics = tk.BooleanVar(value=True)
+            self.v_pdf_data = tk.BooleanVar(value=True)
+            ttk.Checkbutton(f5, text="Extract the pictures from the PDFs  (saved as BRAND_ID_01 and resized like every other picture)",
+                            variable=self.v_pdf_pics).grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 0), padx=(20, 0))
+            ttk.Checkbutton(f5, text="Fill the sizes and the fabric composition from the PDFs",
+                            variable=self.v_pdf_data).grid(row=12, column=0, columnspan=3, sticky="w", padx=(20, 0))
+            ttk.Label(f5, text="Used together with MaxMara's Excel file. 'Pick a brand folder' adds the PDFs of the folder automatically.",
+                      style="Muted.TLabel", wraplength=W(880), justify="left").grid(row=13, column=0, columnspan=3, sticky="w", padx=(20, 0))
+            resize_row(f5, self.v_resize, self.v_resize_px).grid(row=14, column=0, columnspan=3, sticky="w", pady=(10, 0))
             f5.columnconfigure(1, weight=1)
-            for v_ in (self.v_download, self.v_pics, self.v_rename, self.v_resize, self.v_resize_px):
+            for v_ in (self.v_download, self.v_pics, self.v_rename, self.v_resize, self.v_resize_px, self.v_pdf_pics):
                 v_.trace_add("write", lambda *a: self.update_image_summary())
             self.update_image_summary()
 
@@ -5220,6 +5293,31 @@ if tk is not None:
                 self.write_log("Some brand profile files could not be read: " + "; ".join(problems))
             self.update_linesheet_box()
 
+        # ---------------- MaxMara PDFs ----------------
+        def refresh_pdf_info(self):
+            n = len(self.pdfs)
+            if not n:
+                self.v_pdfinfo.set("No PDFs added.")
+            else:
+                names = ", ".join(os.path.basename(p_) for p_ in self.pdfs[:3]) + (" ..." if n > 3 else "")
+                self.v_pdfinfo.set(f"{n} PDF{'s' if n != 1 else ''} added:  {names}")
+            self.update_image_summary()
+
+        def add_pdfs(self):
+            paths = filedialog.askopenfilenames(title="Choose the MaxMara PDF catalog(s)",
+                                                filetypes=[("PDF documents", "*.pdf"), ("All files", "*.*")])
+            if paths:
+                self.add_paths(paths)
+
+        def clear_pdfs(self):
+            for iid, p_ in list(self.iid_path.items()):
+                if p_ in self.pdfs:
+                    self.tree.delete(iid)
+                    self.iid_path.pop(iid, None)
+            self.pdfs.clear()
+            self.refresh_pdf_info()
+            self.status.set("PDFs removed.")
+
         # ---------------- file list ----------------
         def add_files(self):
             paths = filedialog.askopenfilenames(title="Choose one or several Excel / CSV files (and the brand's PDF catalogs)",
@@ -5236,8 +5334,8 @@ if tk is not None:
             self.update_idletasks()
             data, n_img = scan_brand_folder(folder)
             pdfs = scan_brand_pdfs(folder)
-            if not data and not n_img:
-                messagebox.showinfo(APP_NAME, "No data files (.xlsx .xlsm .xlsb .csv) or images were found in that folder.")
+            if not data and not n_img and not pdfs:
+                messagebox.showinfo(APP_NAME, "No data files (.xlsx .xlsm .xlsb .csv), PDFs or images were found in that folder.")
                 self.status.set("Ready.")
                 return
             if not self.v_out.get():
@@ -5245,12 +5343,13 @@ if tk is not None:
             if n_img:
                 self.v_rename.set(folder)
                 self.v_rename_sub.set(True)
-            if data:
+            if data or pdfs:
                 self.add_paths(data + pdfs)
             msg = (f"Brand folder: {len(data)} data file(s), {len(pdfs)} PDF(s) and {n_img} image(s) found in {folder} (sub-folders included)."
-                   + ("  The images will be matched and renamed (see '2. Images')." if n_img else ""))
+                   + ("  The images will be matched and renamed (see 'Images')." if n_img else "")
+                   + (f"  The {len(pdfs)} PDF(s) are used for pictures, sizes and fabric (MaxMara)." if pdfs else ""))
             self.write_log(msg)
-            self.status.set(f"Found {len(data)} data file(s) and {n_img} image(s).")
+            self.status.set(f"Found {len(data)} data file(s), {len(pdfs)} PDF(s) and {n_img} image(s).")
 
         @staticmethod
         def kind_of(st):
@@ -5286,6 +5385,8 @@ if tk is not None:
                 parts.append("image links")
             if self.v_rename.get().strip():
                 parts.append("rename from folder")
+            if self.pdfs and self.v_pdf_pics.get():
+                parts.append(f"{len(self.pdfs)} MaxMara PDF{'s' if len(self.pdfs) != 1 else ''}")
             if self.v_resize.get():
                 parts.append(f"resize {self.v_resize_px.get().strip() or RESIZE_DEFAULT_PX} px")
             self.imgsec.set_title(detail=" · ".join(parts) if parts else "no images")
@@ -5321,6 +5422,7 @@ if tk is not None:
             if not self.v_out.get() and self.states:
                 self.v_out.set(os.path.dirname(next(iter(self.states))))
             self.status.set(f"{len(self.states)} file(s) in the list" + (f" + {len(self.pdfs)} PDF(s)." if self.pdfs else "."))
+            self.refresh_pdf_info()
             self.update_linesheet_box()
             if first_new:
                 self.tree.selection_set(first_new)
@@ -5335,6 +5437,7 @@ if tk is not None:
                 self.tree.delete(iid)
                 if p == self.cur:
                     self.cur = None
+            self.refresh_pdf_info()
             self.update_linesheet_box()
             kids = self.tree.get_children()
             if kids:
@@ -5349,6 +5452,7 @@ if tk is not None:
             self.pdfs.clear()
             self.iid_path.clear()
             self.cur = None
+            self.refresh_pdf_info()
             self.update_linesheet_box()
             self.show_empty()
 
@@ -5593,7 +5697,7 @@ if tk is not None:
                 brand_upper=self.v_upper.get(), black_unavailable=self.v_black.get(), require_value=self.v_reqval.get(),
                 price_currency="AUTO" if self.v_pricecur.get() == "Automatic" else self.v_pricecur.get(),
                 download=self.v_download.get(), extract_pictures=self.v_pics.get(), skip_existing=self.v_skip.get(),
-                pdf_paths=list(self.pdfs))
+                pdf_paths=list(self.pdfs), pdf_pictures=self.v_pdf_pics.get(), pdf_data=self.v_pdf_data.get())
             rename_dir = self.v_rename.get().strip()
             if rename_dir and not os.path.isdir(rename_dir):
                 messagebox.showwarning(APP_NAME, "The folder of images to rename does not exist (section 2. Images).")
@@ -5630,6 +5734,8 @@ if tk is not None:
             self.v_skip.set(True)
             self.v_resize.set(True)
             self.v_resize_px.set(str(RESIZE_DEFAULT_PX))
+            self.v_pdf_pics.set(True)
+            self.v_pdf_data.set(True)
             self.fill_widgets([], {}, "single", [], None)
             self.adv.set_open(False)
             self.more.set_open(False)
@@ -5840,6 +5946,17 @@ if tk is not None:
             ttk.Checkbutton(f2, text="Also look inside sub-folders", variable=self.v_sub).grid(row=1, column=0, sticky="w", pady=(6, 0))
             self.v_imginfo = tk.StringVar(value="")
             ttk.Label(f2, textvariable=self.v_imginfo, style="Info.TLabel").grid(row=2, column=0, columnspan=2, sticky="w")
+            self.pdfs = []
+            pr = ttk.Frame(f2)
+            pr.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            ttk.Label(pr, text="MaxMara PDF catalogs:").pack(side="left")
+            ttk.Button(pr, text="Add PDFs...", command=self.add_pdfs).pack(side="left", padx=6)
+            ttk.Button(pr, text="Remove PDFs", command=self.clear_pdfs).pack(side="left")
+            self.v_pdfinfo = tk.StringVar(value="none")
+            ttk.Label(pr, textvariable=self.v_pdfinfo, style="Muted.TLabel").pack(side="left", padx=8)
+            ttk.Label(f2, text="Pictures found in the PDFs are saved for the matching products (BRAND_ID_01) and resized like the "
+                               "loose images. With PDFs, the images folder above is optional.", style="Muted.TLabel",
+                      wraplength=W(880), justify="left").grid(row=4, column=0, columnspan=2, sticky="w")
             f2.columnconfigure(0, weight=1)
 
             f3 = Card(body, text=" 3.  Options ", padding=12)
@@ -5860,6 +5977,8 @@ if tk is not None:
         def badge_text(self):
             n = self.lb_files.size()
             parts = [f"{n} file{'s' if n != 1 else ''}"] if n else []
+            if self.pdfs:
+                parts.append(f"{len(self.pdfs)} PDF{'s' if len(self.pdfs) != 1 else ''}")
             if self.v_imgdir.get().strip():
                 parts.append("images folder: " + os.path.basename(self.v_imgdir.get().strip().rstrip("/\\")))
             return "  ·  ".join(parts)
@@ -5879,19 +5998,40 @@ if tk is not None:
             for i in reversed(self.lb_files.curselection()):
                 self.lb_files.delete(i)
 
+        def _refresh_pdfs(self):
+            n = len(self.pdfs)
+            self.v_pdfinfo.set("none" if not n else f"{n} PDF{'s' if n != 1 else ''}:  "
+                               + ", ".join(os.path.basename(p_) for p_ in self.pdfs[:3]) + (" ..." if n > 3 else ""))
+
+        def add_pdfs(self):
+            for p_ in filedialog.askopenfilenames(title="Choose the MaxMara PDF catalog(s)",
+                                                  filetypes=[("PDF documents", "*.pdf"), ("All files", "*.*")]):
+                if p_ not in self.pdfs:
+                    self.pdfs.append(p_)
+            self._refresh_pdfs()
+
+        def clear_pdfs(self):
+            self.pdfs.clear()
+            self._refresh_pdfs()
+
         def pick_brand_folder(self):
-            folder = filedialog.askdirectory(title="Choose the brand's folder (data files and images)")
+            folder = filedialog.askdirectory(title="Choose the brand's folder (data files, PDFs and images)")
             if not folder:
                 return
             data, n_img = scan_brand_folder(folder, self.v_sub.get())
-            if not data and not n_img:
-                messagebox.showinfo(APP_NAME, "No data files (.xlsx .xlsm .xlsb .csv) or images were found in that folder.")
+            pdfs = scan_brand_pdfs(folder, self.v_sub.get())
+            if not data and not n_img and not pdfs:
+                messagebox.showinfo(APP_NAME, "No data files (.xlsx .xlsm .xlsb .csv), PDFs or images were found in that folder.")
                 return
             self._add(data)
+            for p_ in pdfs:
+                if p_ not in self.pdfs:
+                    self.pdfs.append(p_)
+            self._refresh_pdfs()
             if n_img:
                 self.v_imgdir.set(folder)
-            self.v_imginfo.set(f"Brand folder: {len(data)} data file(s) and {n_img} image(s) found.")
-            self.status.set(f"Found {len(data)} data file(s) and {n_img} image(s).")
+            self.v_imginfo.set(f"Brand folder: {len(data)} data file(s), {len(pdfs)} PDF(s) and {n_img} image(s) found.")
+            self.status.set(f"Found {len(data)} data file(s), {len(pdfs)} PDF(s) and {n_img} image(s).")
 
         def browse_images(self):
             p_ = filedialog.askdirectory(title="Choose the folder with the images to rename")
@@ -5906,14 +6046,16 @@ if tk is not None:
                 messagebox.showwarning(APP_NAME, "Please add the product file(s) (section 1).")
                 return None
             img = self.v_imgdir.get().strip()
-            if not img or not os.path.isdir(img):
-                messagebox.showwarning(APP_NAME, "Please choose the images folder (section 2).")
+            if (not img or not os.path.isdir(img)) and not self.pdfs:
+                messagebox.showwarning(APP_NAME, "Please choose the images folder (section 2), or add the MaxMara PDFs.")
                 return None
+            if img and not os.path.isdir(img):
+                img = ""
             px = resize_value(self.v_resize, self.v_resize_px)
             if px is False:
                 return None
             return dict(data_paths=files, images_dir=img, recurse=self.v_sub.get(), resize_px=px,
-                        skip_existing=self.v_skip.get())
+                        skip_existing=self.v_skip.get(), pdf_paths=list(self.pdfs))
 
         def work(self, cfg, log, progress, stop):
             return run_rename(cfg, log, progress, stop)
@@ -5924,6 +6066,8 @@ if tk is not None:
 
         def reset(self):
             self.lb_files.delete(0, "end")
+            self.pdfs.clear()
+            self._refresh_pdfs()
             self.v_imgdir.set("")
             self.v_imginfo.set("")
             self.v_sub.set(True)
@@ -5946,10 +6090,11 @@ if tk is not None:
             bf = ttk.Frame(f1)
             bf.pack(fill="x")
             ttk.Button(bf, text="Add PDFs...", command=self.add_files).pack(side="left")
-            ttk.Button(bf, text="Remove selected", command=self.remove_files).pack(side="left", padx=6)
-            ttk.Button(bf, text="Move up", command=lambda: self.move(-1)).pack(side="left")
-            ttk.Button(bf, text="Move down", command=lambda: self.move(1)).pack(side="left", padx=6)
-            ttk.Button(bf, text="Clear list", command=lambda: self.lb_files.delete(0, "end")).pack(side="left")
+            ttk.Button(bf, text="Pick a brand folder...", command=self.pick_brand_folder).pack(side="left", padx=6)
+            ttk.Button(bf, text="Remove selected", command=self.remove_files).pack(side="left")
+            ttk.Button(bf, text="Move up", command=lambda: self.move(-1)).pack(side="left", padx=6)
+            ttk.Button(bf, text="Move down", command=lambda: self.move(1)).pack(side="left")
+            ttk.Button(bf, text="Clear list", command=lambda: self.lb_files.delete(0, "end")).pack(side="left", padx=6)
             self.lb_files = tk.Listbox(f1, height=5, selectmode="extended", exportselection=False)
             self.lb_files.pack(fill="x", pady=8)
             ttk.Label(f1, text="The program finds every product code that starts with MML in the PDF and saves the "
@@ -5968,12 +6113,12 @@ if tk is not None:
 
             f3 = Card(body, text=" 3.  Options ", padding=12)
             f3.pack(fill="x", padx=W(8), pady=(W(14), 0))
-            self.v_resize = tk.BooleanVar(value=False)
+            self.v_resize = tk.BooleanVar(value=True)
             self.v_resize_px = tk.StringVar(value=str(RESIZE_DEFAULT_PX))
             resize_row(f3, self.v_resize, self.v_resize_px).pack(anchor="w")
-            ttk.Label(f3, text="Off by default here: the pictures are saved in the PDF's own quality (JPG, quality 95) and the "
-                               "Image Renaming page resizes them afterwards.", style="Muted.TLabel", wraplength=W(880),
-                      justify="left").pack(anchor="w", pady=(6, 0))
+            ttk.Label(f3, text="On by default, like everywhere in the program: the pictures get the same resizing as all the "
+                               "others (shortest side 1024 px, JPG). Switch it off to keep the PDF's own picture size.",
+                      style="Muted.TLabel", wraplength=W(880), justify="left").pack(anchor="w", pady=(6, 0))
             if not pymupdf_available():
                 ttk.Label(f3, text="The PDF library (PyMuPDF) is missing: run Build_NuORDER_Client.bat again.",
                           style="Warn.TLabel").pack(anchor="w", pady=(6, 0))
@@ -5995,6 +6140,21 @@ if tk is not None:
         def remove_files(self):
             for i in reversed(self.lb_files.curselection()):
                 self.lb_files.delete(i)
+
+        def pick_brand_folder(self):
+            folder = filedialog.askdirectory(title="Choose the brand's folder (its PDF catalogs are found automatically)")
+            if not folder:
+                return
+            found = scan_brand_pdfs(folder)
+            if not found:
+                messagebox.showinfo(APP_NAME, "No PDF files were found in that folder.")
+                return
+            have = set(self.lb_files.get(0, "end"))
+            for p_ in found:
+                if p_ not in have:
+                    self.lb_files.insert("end", p_)
+            self.v_dest.set(os.path.join(folder, "MaxMara Images"))
+            self.status.set(f"Found {len(found)} PDF(s) in the folder.")
 
         def move(self, delta):
             sel = self.lb_files.curselection()
@@ -6033,7 +6193,7 @@ if tk is not None:
         def reset(self):
             self.lb_files.delete(0, "end")
             self.v_dest.set("")
-            self.v_resize.set(False)
+            self.v_resize.set(True)
             self.v_resize_px.set(str(RESIZE_DEFAULT_PX))
 
     # ------------------------------------------------------------------
