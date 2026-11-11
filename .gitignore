@@ -1,0 +1,15 @@
+# Build output (made by Build_NuORDER_Client.bat)
+build/
+dist/
+*.spec
+*.exe
+__pycache__/
+*.pyc
+
+# Never upload brand data or results
+*_NuORDER/
+Renamed Images/
+*.xlsx
+*.xlsm
+*.xlsb
+*.csv
