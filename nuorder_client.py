@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.6"
+APP_VERSION = "3.7"
 GITHUB_REPO = "dioniciogarcia/tirsorder"          # where new versions are published (Releases)
 RELEASE_EXE = "NuORDER-Client.exe"                # the program GitHub compiles for every version
 RELEASE_PY = "nuorder_client.py"
@@ -6601,7 +6601,6 @@ if tk is not None:
         ("clean", "▤", "Clean Data & Images", "Brand linesheets  →  NuORDER-ready data and images"),
         ("upd", "⟳", "Linesheet Updater", "Apply a brand's changes (prices, styles, UPCs ...) to a data file or NuORDER export"),
         ("rename", "▣", "Image Renaming", "Match a folder of images to the products and copy them renamed and resized"),
-        ("pdf", "▦", "MaxMara PDF", "Pull the product pictures (MML codes) out of MaxMara PDF catalogs"),
         ("hist", "◷", "History", "Every run, with a saved copy of each cleaned data file"),
         ("settings", "⚙", "Settings", "Program update"),
     ]
@@ -6704,10 +6703,9 @@ if tk is not None:
         holder = ttk.Frame(main_, style="Page.TFrame")
         holder.pack(fill="both", expand=True)
         clean, upd, rename, hist = CleanTab(holder), UpdaterTab(holder), RenameTab(holder), HistoryTab(holder)
-        pdf = PdfTab(holder)
         settings = SettingsTab(holder)
-        settings.is_busy = lambda: any(t.running for t in (clean, upd, rename, pdf))
-        pages = {"clean": clean, "upd": upd, "rename": rename, "pdf": pdf, "hist": hist, "settings": settings}
+        settings.is_busy = lambda: any(t.running for t in (clean, upd, rename))
+        pages = {"clean": clean, "upd": upd, "rename": rename, "hist": hist, "settings": settings}
         cur = {"key": None}
 
         def show(key):
@@ -6764,7 +6762,7 @@ if tk is not None:
         show("clean")
         apply_theme(root, UI["mode"], UI["accent"])
         root.after(1500, tick)
-        return dict(show=show, clean=clean, upd=upd, rename=rename, pdf=pdf, hist=hist, settings=settings, pick_theme=pick_theme,
+        return dict(show=show, clean=clean, upd=upd, rename=rename, hist=hist, settings=settings, pick_theme=pick_theme,
                     pick_accent=pick_accent)
 
 else:

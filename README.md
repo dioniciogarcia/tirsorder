@@ -16,7 +16,10 @@ GitHub compiles the program by itself every time it changes. Download the newest
 
 ### How a new version is published
 1. Change `nuorder_client.py` and raise `APP_VERSION` (for example 3.5 → 3.6).
-2. Add a `### Version 3.6` section to the Changelog below (it becomes the release notes).
+2. Add a `### Version 3.7 — one less tab
+- The separate "MaxMara PDF" page was removed: everything it did is now inside the first tab (Clean Data & Images, Images section) and the Image Renaming tab.
+
+### Version 3.6` section to the Changelog below (it becomes the release notes).
 3. Push to `main`. GitHub (Actions tab → *Build NuORDER Client*) compiles `NuORDER-Client.exe` on Windows and publishes it as release `v3.6`, together with `nuorder_client.py`. This takes about 5 minutes.
 
 ## How to build and run yourself (Windows)
