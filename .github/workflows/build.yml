@@ -54,6 +54,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          PYTHONUTF8: "1"
         run: |
           v="${{ steps.ver.outputs.version }}"
           tag="v$v"
