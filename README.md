@@ -36,7 +36,6 @@ To try the program without building the .exe, double-click `Run_NuORDER_Client_w
 
 ## What it does
 
-- **Clean Data & Images**: detects the brand (JOOR export, Ferragamo, Gucci, Velvet, Armani, NuORDER Default Data, or general rules), cleans one or several files into one master file, extracts pictures, downloads image links, renames a folder of images and resizes them.
 - **Linesheet Updater**: applies a brand's update file (prices, style numbers, names, season, dates, sizes, UPCs…) to a processed file or NuORDER data export, highlighting only the changed cells.
 - **Image Renaming**: matches a folder of images to the products of a file and copies them renamed (`BRAND_ID_01`, `_02`…) and resized.
 - **MaxMara PDF**: pulls the product pictures out of MaxMara's PDF catalogs (one JPG per product code starting with MML, saved as CODE.jpg), ready for the Image Renaming page.
