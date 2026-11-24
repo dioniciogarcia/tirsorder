@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.7"
+APP_VERSION = "3.8"
 GITHUB_REPO = "dioniciogarcia/tirsorder"          # where new versions are published (Releases)
 RELEASE_EXE = "NuORDER-Client.exe"                # the program GitHub compiles for every version
 RELEASE_PY = "nuorder_client.py"
@@ -254,6 +254,7 @@ DATE_RE = re.compile(
     r"(?P<d4>\d{1,2})[\s\-]+(?P<mon4>[A-Za-z]{3,9})\.?,?[\s\-]+(?P<y4>\d{4})"
     r"|(?P<y1>\d{4})[-/.](?P<m1>\d{1,2})[-/.](?P<d1>\d{1,2})"
     r"|(?P<m2>\d{1,2})(?P<sep>[/.-])(?P<d2>\d{1,2})(?:(?P=sep)(?P<y2>\d{2,4}))?"
+    r"|(?P<d5>\d{1,2})\s+(?P<mon5>[A-Za-z]{3,9})\.?(?![A-Za-z])(?!\s*\d)"   # '15 APRIL - 31 AUGUST 2027'
     r"|(?P<mon>[A-Za-z]{3,9})\.?\s+(?P<d3>\d{1,2})(?!\d)(?:,?\s+(?P<y3>\d{4}))?"
 )
 
@@ -270,10 +271,16 @@ def parse_dates(v, default_year):
         if 20000 < v < 80000:
             return [(datetime.datetime(1899, 12, 30) + datetime.timedelta(days=float(v))).date()]
         return []
-    out = []
+    out, no_year = [], []
     for m in DATE_RE.finditer(str(v)):
         try:
-            if m.group("d4"):
+            if m.group("d5"):                   # day + month, the year comes later in the text
+                mon = MONTHS.get(m.group("mon5")[:3].lower())
+                if not mon:
+                    continue
+                no_year.append(len(out))
+                out.append(datetime.date(default_year, mon, int(m.group("d5"))))
+            elif m.group("d4"):
                 mon = MONTHS.get(m.group("mon4")[:3].lower())
                 if not mon:
                     continue
@@ -288,10 +295,20 @@ def parse_dates(v, default_year):
                 mon = MONTHS.get(m.group("mon")[:3].lower())
                 if not mon:
                     continue
+                if not m.group("y3"):
+                    no_year.append(len(out))
                 y = int(m.group("y3")) if m.group("y3") else default_year
                 out.append(datetime.date(y, mon, int(m.group("d3"))))
         except ValueError:
             continue
+    if no_year and len(no_year) < len(out):     # 'APRIL 15 - AUGUST 31 2027': the first date takes the next year written
+        for k in no_year:
+            later = [out[j].year for j in range(k + 1, len(out)) if j not in no_year]
+            if later:
+                try:
+                    out[k] = out[k].replace(year=later[0])
+                except ValueError:
+                    pass
     return out
 
 
@@ -1384,6 +1401,7 @@ class Result:
         self.warnings = []
         self.numeric = set()
         self.brand = ""
+        self.no_sizes = False      # True for a brand profile without SIZE columns (e.g. Gucci keeps SIZE SCALE as text)
 
 
 def validate_rows(res, L):
@@ -1393,6 +1411,8 @@ def validate_rows(res, L):
         keys.append("BRAND_ID")
     for k in keys:
         if k == "SIZE 1":
+            if getattr(res, "no_sizes", False):
+                continue
             n = sum(1 for r in res.rows if not r["sizes"])
         elif k in res.headers:
             n = sum(1 for r in res.rows if r["values"].get(k) in (None, ""))
@@ -1753,8 +1773,48 @@ BUILTIN_PROFILES = {
         "season": {"from": ["Cll.Nas."]},
         "pictures": {"extract": True, "name_from": "STYLE NUMBER"},
     },
+    "Gucci Linesheet": {
+        "name": "Gucci Linesheet", "label": "Gucci", "brand": "Gucci", "version": 1,
+        "description": "Gucci linesheets with a title row (e.g. WOMEN'S SHOES FW27 GUCCI MAGGIO COLLECTION), a SHIP WINDOW "
+                       "line and STYLE, MATERIAL, COLOUR, LINE, SIZE SCALE, US COST columns (no SMC / customer price columns).",
+        "detect": {"any_of": [
+            {"headers_all": ["STYLE", "MATERIAL", "COLOUR", "LINE", "STYLE DESCRIPTION", "SIZE SCALE", "US COST"]},
+            {"headers_all": ["STYLE", "MATERIAL", "COLOR", "LINE", "STYLE DESCRIPTION", "SIZE SCALE", "US COST"]},
+        ]},
+        "row_key": ["SMC"],
+        "row_key_alt": ["STYLE"],
+        "linesheet_title": True,
+        "columns": [
+            {"header": "LINESHEET NAME", "value": "{linesheet}"},
+            {"header": "SEASON", "value": "{season}"},
+            {"header": "STYLE NUMBER", "from": ["SMC", "STYLE"]},
+            {"header": "BRAND_ID", "join_out": ["STYLE NUMBER"], "sep": ""},
+            {"header": "MATERIAL CODE", "from": "MATERIAL"},
+            {"header": "COLOR CODE", "from": ["COLOUR", "COLOR"]},
+            {"header": "AVAILABLE FROM", "date": "from"},
+            {"header": "AVAILABLE UNTIL", "date": "until"},
+            {"header": "DIVISION", "from": "CO", "optional": True},
+            {"header": "SEASONALITY", "from": ["FASHION/CO", "FASHION, SSNL, OR FUTURE CO", "SEASONALITY"], "optional": True},
+            {"header": "NAME", "from": "LINE"},
+            {"header": "DESCRIPTION", "from": "STYLE DESCRIPTION"},
+            {"header": "FABRIC DESCRIPTION", "from": "MATERIAL DESCRIPTION"},
+            {"header": "COLOR", "from": ["COLOUR DESCRIPTION", "COLOR DESCRIPTION"]},
+            {"header": "HEEL HEIGHT", "from": "HEEL HEIGHT", "optional": True},
+            {"header": "CATEGORY", "from": "FUNCTION"},
+            {"header": "DELIVERY MONTH", "from": ["TARGET DELIVERY", "SUB DELIVERY"], "optional": True},
+            {"header": "EXOTIC", "from": "EXOTIC", "optional": True},
+            {"header": "PRINT/FOCUS", "from": ["PRINT/FOCUS", "FOCUS"], "optional": True},
+            {"header": "SIZE SCALE", "from": "SIZE SCALE"},
+            {"header": "WHOLESALE USD", "from": ["US COST"] + _USD_W, "number": True, "usd": True},
+            {"header": "RETAIL USD", "from": ["US MSRP"] + _USD_R, "number": True, "usd": True},
+        ],
+        "sizes": {"mode": "list", "from": []},
+        "dates": {"title_regex": r"SHIP\s*WINDOW\s*:?\s*(.+)"},
+        "season": {"from": "title"},
+        "pictures": {"extract": True, "name_from": "BRAND_ID"},
+    },
     "Gucci": {
-        "name": "Gucci", "label": "Gucci", "brand": "Gucci", "version": 2,
+        "name": "Gucci", "label": "Gucci (master linesheet with SMC)", "brand": "Gucci", "version": 3,
         "description": "Gucci master linesheets (title row with SHIP WINDOW, SMC, SIZE SCALE columns).",
         "detect": {"any_of": [{"headers_all": ["UPDATED STYLE NUMBER", "SMC", "SIZE SCALE"]},
                               {"headers_all": ["SMC", "SIZE SCALE", "STYLE", "MATERIAL"]}]},
@@ -2132,6 +2192,12 @@ def profile_result(cfg, ctx, L, progress, stop):
     last_row = last_data_row(ws)
     L(f"Sheet '{sheet}', header on row {hr}, data up to row {last_row}.")
     above = " | ".join(clean_text(v) for row in rows_preview[:hr - 1] for v in row if not is_blank(v))
+    title_ls = ""
+    if prof.get("linesheet_title"):         # the longest text above the header that is not the ship window
+        texts = [clean_text(v) for row in rows_preview[:hr - 1] for v in row
+                 if isinstance(v, str) and not re.search(r"SHIP\s*WINDOW|DELIVERY", v, re.I)]
+        texts = [t for t in texts if len(t) >= 8 and re.search(r"[A-Za-z]", t)]
+        title_ls = max(texts, key=len) if texts else ""
 
     def idx(name):
         if isinstance(name, list):
@@ -2318,12 +2384,13 @@ def profile_result(cfg, ctx, L, progress, stop):
     res = Result(path, prof.get("label") or prof["name"])
     res.brand = prof.get("brand") or prof.get("label") or prof["name"]
     res.numeric = {c["header"] for c in columns if c.get("number")}
+    res.no_sizes = not any(c["header"] == "SIZES" for c in columns)
     usd_filled = 0
     pic = prof.get("pictures") or {}
     for g in groups.values():
         season = g["season"] or file_season or cfg.get("season", "")
         season = apply_season_map(season, sea.get("map"))
-        linesheet = override or linesheet_label(g["linesheet"])
+        linesheet = override or linesheet_label(g["linesheet"]) or linesheet_label(title_ls)
         if not linesheet and prof.get("linesheet_pattern") and cfg.get("sheet"):
             linesheet = linesheet_label(prof["linesheet_pattern"].replace("{season}", season or "").replace(
                 "{sheet}", clean_text(cfg["sheet"])).replace(" - -", " -").strip(" -"))
@@ -2627,7 +2694,7 @@ def merge_headers(results):
                 pos = union.index(prev) + 1 if prev in union else len(union)
                 union.insert(pos, h)
             prev = h
-    if "SIZES" not in union:
+    if "SIZES" not in union and not (results and all(getattr(r, "no_sizes", False) for r in results)):
         union.append("SIZES")
     return union
 
@@ -2636,6 +2703,10 @@ def write_master(results, xlsx_path, L):
     union = merge_headers(results)
     max_sizes = max((len(r["sizes"]) for res in results for r in res.rows), default=1) or 1
     max_upcs = max((len(r.get("upcs") or []) for res in results for r in res.rows), default=0)
+    if "SIZES" not in union:
+        max_sizes = 0
+        if max_upcs:
+            union.append("SIZES")
     if max_upcs and "UPCS" not in union:
         union.insert(union.index("SIZES") + 1, "UPCS")
     headers = []

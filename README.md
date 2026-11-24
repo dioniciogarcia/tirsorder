@@ -16,7 +16,14 @@ GitHub compiles the program by itself every time it changes. Download the newest
 
 ### How a new version is published
 1. Change `nuorder_client.py` and raise `APP_VERSION` (for example 3.5 → 3.6).
-2. Add a `### Version 3.7 — one less tab
+2. Add a `### Version 3.8 - Gucci linesheets
+- New Gucci profile for linesheets with a title row (e.g. WOMEN'S SHOES FW27 GUCCI MAGGIO COLLECTION), a SHIP WINDOW line and US COST / US MSRP columns. It is detected automatically, even when the file has other sheets.
+- Output follows the cleaned NuORDER layout: LINESHEET NAME (title + RP), SEASON (FW27), STYLE NUMBER and BRAND_ID (full code), MATERIAL CODE, COLOR CODE, AVAILABLE FROM / UNTIL (from the ship window), SEASONALITY, NAME, DESCRIPTION, FABRIC DESCRIPTION, COLOR, HEEL HEIGHT, CATEGORY, DELIVERY MONTH, EXOTIC, PRINT/FOCUS, SIZE SCALE, WHOLESALE USD, RETAIL USD.
+- Pictures in the PHOTO column are saved as BRAND_ID_01.
+- Ship windows written like "15 APRIL - 31 AUGUST 2027" are now read correctly.
+- Older Gucci master linesheets (with SMC and customer price columns) still work as before.
+
+### Version 3.7 — one less tab
 - The separate "MaxMara PDF" page was removed: everything it did is now inside the first tab (Clean Data & Images, Images section) and the Image Renaming tab.
 
 ### Version 3.6` section to the Changelog below (it becomes the release notes).
