@@ -16,7 +16,11 @@ GitHub compiles the program by itself every time it changes. Download the newest
 
 ### How a new version is published
 1. Change `nuorder_client.py` and raise `APP_VERSION` (for example 3.5 → 3.6).
-2. Add a `### Version 3.8 - Gucci linesheets
+2. Add a `### Version 3.9 - Gucci sizes
+- Gucci linesheets now also get SIZE 1, SIZE 2 ... from SIZE SCALE (kept as text too): "34 - 42, INC HALF SIZES" -> 34, 34.5 ... 42; "36 - 39" -> 36, 37, 38, 39 (half sizes only when listed); "NO HALF SIZES" -> whole sizes only.
+- Older Gucci master linesheets: STYLE NUMBER, BRAND_ID and picture names have no underscores any more (A00BZQ0PV004009).
+
+### Version 3.8 - Gucci linesheets
 - New Gucci profile for linesheets with a title row (e.g. WOMEN'S SHOES FW27 GUCCI MAGGIO COLLECTION), a SHIP WINDOW line and US COST / US MSRP columns. It is detected automatically, even when the file has other sheets.
 - Output follows the cleaned NuORDER layout: LINESHEET NAME (title + RP), SEASON (FW27), STYLE NUMBER and BRAND_ID (full code), MATERIAL CODE, COLOR CODE, AVAILABLE FROM / UNTIL (from the ship window), SEASONALITY, NAME, DESCRIPTION, FABRIC DESCRIPTION, COLOR, HEEL HEIGHT, CATEGORY, DELIVERY MONTH, EXOTIC, PRINT/FOCUS, SIZE SCALE, WHOLESALE USD, RETAIL USD.
 - Pictures in the PHOTO column are saved as BRAND_ID_01.

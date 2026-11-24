@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.8"
+APP_VERSION = "3.9"
 GITHUB_REPO = "dioniciogarcia/tirsorder"          # where new versions are published (Releases)
 RELEASE_EXE = "NuORDER-Client.exe"                # the program GitHub compiles for every version
 RELEASE_PY = "nuorder_client.py"
@@ -1356,7 +1356,7 @@ def parse_size_scale(text, even_all=False):
         a_txt, b_txt = m.group(1), m.group(2)
         a, b = float(a_txt), float(b_txt)
         rest = t[m.end():]
-        half = "HALF" in rest or a % 1 or b % 1
+        half = ("HALF" in rest and not re.search(r"\bNO\s+HALF", rest)) or a % 1 or b % 1
         excl = set()
         em = re.search(r"\b(?:BUT\s+NO|EXCEPT|EXCLUDING|NO)\b(.*)", rest)
         if em:
@@ -1774,7 +1774,7 @@ BUILTIN_PROFILES = {
         "pictures": {"extract": True, "name_from": "STYLE NUMBER"},
     },
     "Gucci Linesheet": {
-        "name": "Gucci Linesheet", "label": "Gucci", "brand": "Gucci", "version": 1,
+        "name": "Gucci Linesheet", "label": "Gucci", "brand": "Gucci", "version": 2,
         "description": "Gucci linesheets with a title row (e.g. WOMEN'S SHOES FW27 GUCCI MAGGIO COLLECTION), a SHIP WINDOW "
                        "line and STYLE, MATERIAL, COLOUR, LINE, SIZE SCALE, US COST columns (no SMC / customer price columns).",
         "detect": {"any_of": [
@@ -1807,14 +1807,15 @@ BUILTIN_PROFILES = {
             {"header": "SIZE SCALE", "from": "SIZE SCALE"},
             {"header": "WHOLESALE USD", "from": ["US COST"] + _USD_W, "number": True, "usd": True},
             {"header": "RETAIL USD", "from": ["US MSRP"] + _USD_R, "number": True, "usd": True},
+            {"header": "SIZES"},
         ],
-        "sizes": {"mode": "list", "from": []},
+        "sizes": {"mode": "scale_text", "from": "SIZE SCALE"},
         "dates": {"title_regex": r"SHIP\s*WINDOW\s*:?\s*(.+)"},
         "season": {"from": "title"},
         "pictures": {"extract": True, "name_from": "BRAND_ID"},
     },
     "Gucci": {
-        "name": "Gucci", "label": "Gucci (master linesheet with SMC)", "brand": "Gucci", "version": 3,
+        "name": "Gucci", "label": "Gucci (master linesheet with SMC)", "brand": "Gucci", "version": 4,
         "description": "Gucci master linesheets (title row with SHIP WINDOW, SMC, SIZE SCALE columns).",
         "detect": {"any_of": [{"headers_all": ["UPDATED STYLE NUMBER", "SMC", "SIZE SCALE"]},
                               {"headers_all": ["SMC", "SIZE SCALE", "STYLE", "MATERIAL"]}]},
@@ -1822,7 +1823,7 @@ BUILTIN_PROFILES = {
         "row_key_alt": ["UPDATED STYLE NUMBER"],
         "columns": [
             {"header": "LINESHEET NAME", "value": "{linesheet}"},
-            {"header": "STYLE NUMBER", "join": ["STYLE", "MATERIAL", ["COLOUR", "COLOR"]], "sep": "_"},
+            {"header": "STYLE NUMBER", "join": ["STYLE", "MATERIAL", ["COLOUR", "COLOR"]], "sep": ""},
             {"header": "UPDATED STYLE NUMBER", "from": "UPDATED STYLE NUMBER", "optional": True},
             {"header": "Style", "from": "STYLE"},
             {"header": "Material", "from": "MATERIAL"},
@@ -1841,7 +1842,7 @@ BUILTIN_PROFILES = {
             {"header": "WHOLESALE USD", "from": "WHOLESALE PRICE", "number": True, "usd": True},
             {"header": "RETAIL USD", "from": ["US MSRP", "RETAIL PRICE"], "number": True, "usd": True},
             {"header": "SIZES"},
-            {"header": "BRAND_ID", "join": ["STYLE", "MATERIAL", ["COLOUR", "COLOR"]], "sep": "_"},
+            {"header": "BRAND_ID", "join": ["STYLE", "MATERIAL", ["COLOUR", "COLOR"]], "sep": ""},
             {"header": "SEASON", "value": "{season}"},
         ],
         "sizes": {"mode": "scale_text", "from": "SIZE SCALE"},
