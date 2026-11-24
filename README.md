@@ -16,7 +16,12 @@ GitHub compiles the program by itself every time it changes. Download the newest
 
 ### How a new version is published
 1. Change `nuorder_client.py` and raise `APP_VERSION` (for example 3.5 → 3.6).
-2. Add a `### Version 3.9 - Gucci sizes
+2. Add a `### Version 3.10 - Gucci S73 layout
+- Gucci linesheets with a single STYLE NUMBER column (no SMC / MATERIAL / COLOUR columns), WHOLESALE PRICE and RETAIL PRICE are now detected as Gucci.
+- MATERIAL CODE and COLOR CODE are taken from the style number (A00TH1 EY000 1000).
+- Ship windows like "15 APRIL 2027 - 31 AUG 2027" and size scales like "5-16 (HALF SIZES OFFERED BUT NO 5.5, 11.5 ...)" are handled.
+
+### Version 3.9 - Gucci sizes
 - Gucci linesheets now also get SIZE 1, SIZE 2 ... from SIZE SCALE (kept as text too): "34 - 42, INC HALF SIZES" -> 34, 34.5 ... 42; "36 - 39" -> 36, 37, 38, 39 (half sizes only when listed); "NO HALF SIZES" -> whole sizes only.
 - Older Gucci master linesheets: STYLE NUMBER, BRAND_ID and picture names have no underscores any more (A00BZQ0PV004009).
 

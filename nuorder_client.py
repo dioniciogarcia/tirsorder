@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover - lets the core logic be tested without a 
     tk = None
 
 APP_NAME = "NuORDER Client"
-APP_VERSION = "3.9"
+APP_VERSION = "3.10"
 GITHUB_REPO = "dioniciogarcia/tirsorder"          # where new versions are published (Releases)
 RELEASE_EXE = "NuORDER-Client.exe"                # the program GitHub compiles for every version
 RELEASE_PY = "nuorder_client.py"
@@ -1774,23 +1774,25 @@ BUILTIN_PROFILES = {
         "pictures": {"extract": True, "name_from": "STYLE NUMBER"},
     },
     "Gucci Linesheet": {
-        "name": "Gucci Linesheet", "label": "Gucci", "brand": "Gucci", "version": 2,
+        "name": "Gucci Linesheet", "label": "Gucci", "brand": "Gucci", "version": 3,
         "description": "Gucci linesheets with a title row (e.g. WOMEN'S SHOES FW27 GUCCI MAGGIO COLLECTION), a SHIP WINDOW "
                        "line and STYLE, MATERIAL, COLOUR, LINE, SIZE SCALE, US COST columns (no SMC / customer price columns).",
         "detect": {"any_of": [
             {"headers_all": ["STYLE", "MATERIAL", "COLOUR", "LINE", "STYLE DESCRIPTION", "SIZE SCALE", "US COST"]},
             {"headers_all": ["STYLE", "MATERIAL", "COLOR", "LINE", "STYLE DESCRIPTION", "SIZE SCALE", "US COST"]},
+            {"headers_all": ["STYLE NUMBER", "LINE", "STYLE DESCRIPTION", "MATERIAL DESCRIPTION", "SIZE SCALE"],
+             "headers_any": ["COLOUR DESCRIPTION", "COLOR DESCRIPTION"]},
         ]},
-        "row_key": ["SMC"],
+        "row_key": ["STYLE NUMBER"],
         "row_key_alt": ["STYLE"],
         "linesheet_title": True,
         "columns": [
             {"header": "LINESHEET NAME", "value": "{linesheet}"},
             {"header": "SEASON", "value": "{season}"},
-            {"header": "STYLE NUMBER", "from": ["SMC", "STYLE"]},
+            {"header": "STYLE NUMBER", "from": ["SMC", "STYLE NUMBER", "STYLE"]},
             {"header": "BRAND_ID", "join_out": ["STYLE NUMBER"], "sep": ""},
-            {"header": "MATERIAL CODE", "from": "MATERIAL"},
-            {"header": "COLOR CODE", "from": ["COLOUR", "COLOR"]},
+            {"header": "MATERIAL CODE", "from": "MATERIAL", "code_part": ["STYLE NUMBER", 6, 11, 15]},
+            {"header": "COLOR CODE", "from": ["COLOUR", "COLOR"], "code_part": ["STYLE NUMBER", 11, 15, 15]},
             {"header": "AVAILABLE FROM", "date": "from"},
             {"header": "AVAILABLE UNTIL", "date": "until"},
             {"header": "DIVISION", "from": "CO", "optional": True},
@@ -1805,8 +1807,8 @@ BUILTIN_PROFILES = {
             {"header": "EXOTIC", "from": "EXOTIC", "optional": True},
             {"header": "PRINT/FOCUS", "from": ["PRINT/FOCUS", "FOCUS"], "optional": True},
             {"header": "SIZE SCALE", "from": "SIZE SCALE"},
-            {"header": "WHOLESALE USD", "from": ["US COST"] + _USD_W, "number": True, "usd": True},
-            {"header": "RETAIL USD", "from": ["US MSRP"] + _USD_R, "number": True, "usd": True},
+            {"header": "WHOLESALE USD", "from": ["US COST", "WHOLESALE PRICE"] + _USD_W, "number": True, "usd": True},
+            {"header": "RETAIL USD", "from": ["US MSRP", "RETAIL PRICE"] + _USD_R, "number": True, "usd": True},
             {"header": "SIZES"},
         ],
         "sizes": {"mode": "scale_text", "from": "SIZE SCALE"},
@@ -2252,7 +2254,7 @@ def profile_result(cfg, ctx, L, progress, stop):
             columns.insert(pos, {"header": "LINESHEET SEPARATOR", "from": ["LINESHEET SEPARATOR", "LINESHEET SEPARATOR NAME"]})
     missing = [c["from"] if isinstance(c["from"], str) else c["from"][0]
                for c in columns if c.get("from") and not c.get("optional") and not c.get("join")
-               and idx(c["from"]) is None]
+               and not c.get("code_part") and idx(c["from"]) is None]
     if missing:
         L("NOTE: these columns were not found in this file and stay empty: " + ", ".join(missing))
 
@@ -2429,6 +2431,10 @@ def profile_result(cfg, ctx, L, progress, stop):
                 vals[h] = 0.01
                 usd_filled += 1
         for c in columns:                       # columns built from other output columns (BRAND_ID ...)
+            if c.get("code_part") and not vals.get(c["header"]):   # e.g. MATERIAL CODE = characters 7-11 of the style number
+                src, a, b, size = c["code_part"]
+                code = clean_text(vals.get(src)).replace(" ", "")
+                vals[c["header"]] = code[a:b] if len(code) == size else None
             if "join_out" in c:
                 parts = [clean_text(vals.get(j)) for j in c["join_out"]]
                 v = c.get("sep", "_").join(p_ for p_ in parts if p_) if all(parts) else None
